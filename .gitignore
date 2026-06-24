@@ -3,6 +3,11 @@ CLAUDE.md
 .claude/
 .claude-*/
 
+# Операційні документи (тексти Jira-тасок, внутрішні нотатки) — локально
+docs/epic.md
+docs/tasks/
+docs/internal/
+
 # Secrets
 .env
 .env.*
