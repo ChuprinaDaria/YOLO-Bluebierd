@@ -1,0 +1,50 @@
+# Reference config — replicate synthetic_apc_726 style
+# Single-class APC base, для перевірки що pipeline працює аналогічно до референсного output.
+
+seed: 42
+
+class:
+  name: ifv_apc
+  id: 1
+  models:
+    - apc_btr80
+    - apc_btr82
+    - apc_mt_lb
+
+count: 700  # ~726 у референсі
+image_size: [640, 640]
+
+camera:
+  altitude_m: [300, 400, 600, 800]
+  view_angle_deg: [10, 20, 30, 45, 60]
+  hfov_deg: 70
+  sensor:
+    width: 1920
+    height: 1080
+    modality: EO
+
+scene:
+  landscapes: [field, forest_belt, dirt_road]
+  seasons: [summer, autumn_mud, winter, spring]
+  weather: [clear, fog, haze, rain]
+  time_of_day: [day, dusk]
+
+degradation:
+  jpeg_quality: [60, 95]
+  motion_blur_px: [0, 8]
+  atmosphere_strength: [0.0, 0.4]
+
+hard_negatives:
+  ratio: 0.15
+  types:
+    - empty_landscape
+    - destroyed_apc
+    - civilian_truck_isolated
+
+output:
+  format: yolo
+  split:
+    train: 0.7
+    valid: 0.2
+    test: 0.1
+  metadata_sidecar: true

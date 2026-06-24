@@ -1,0 +1,7 @@
+# 3D-моделі і важкі бінарники
+assets/models/
+assets/backgrounds/
+assets/textures/
+
+# Output (синтетичний дататасет — не комітити в репо)
+output/runs/
