@@ -1,0 +1,54 @@
+# Claude / local AI tooling — НІКОЛИ не пушити
+CLAUDE.md
+.claude/
+.claude-*/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# ML artifacts — НЕ комітити ваги, ран-логи, чекпойнти
+data/
+datasets/
+runs/
+wandb/
+mlruns/
+trackio/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+checkpoints/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
