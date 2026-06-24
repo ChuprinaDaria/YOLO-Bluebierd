@@ -25,3 +25,7 @@ python-dotenv
 
 # YOLO MCP server (in .tools/YOLO-MCP-Server)
 mcp>=1.0
+
+# Hugging Face — приватний хаб + Jobs
+# УВАГА: `datasets` і `pyarrow` НЕ ставимо локально (SIGILL без SSE4.2). На cloud — без обмежень.
+huggingface_hub>=1.20
