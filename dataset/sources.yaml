@@ -1,0 +1,88 @@
+# Пріоритетні open датасети для warm-start
+# Тільки CC BY 4.0 та MIT — сумісні з defense commercial (Blue Bird).
+
+roboflow:
+  - workspace: tank-s4xwz
+    project: russianttankdroneimageslowquality
+    license: CC BY 4.0
+    images: 993
+    classes: [bmp-1, bmp-2, bmp-3, mt-lb, t-72]
+    perspective: drone FPV low-altitude
+    priority: 1
+    note: TOP — closest to FPV/oblique geometry
+
+  - workspace: capstoneproject
+    project: russian-military-annotated
+    license: CC BY 4.0
+    images: 1000
+    classes: [bm-21, bmd-2, bmp-1, bmp-2, btr-70, mt-lb, t-64, t-80, ...]
+    perspective: mixed
+    priority: 1
+    note: TOP — 10 cls Ukrainian war context
+
+  - workspace: militaryvehiclerecognition
+    project: military-vehicle-recognition
+    license: CC BY 4.0
+    images: 1195
+    classes: [tank, air-fighter, armoured_personnel_carrier, bomber, soldier]
+    perspective: reconnaissance drone aerial
+    priority: 1
+
+  - workspace: defence-rslx9
+    project: air-defence-system-hyzpf
+    license: CC BY 4.0
+    images: 5400
+    classes: [A1, A10, ..., many AD-specific]
+    perspective: aerial
+    priority: 1
+    note: TOP for air_defense клас
+
+  - workspace: militarytanks-c2etq
+    project: military-tanks
+    license: CC BY 4.0
+    images: 5540
+    classes: [tank]
+    perspective: mixed
+    priority: 2
+
+  - workspace: oleksandr-tara
+    project: military-vehicle-detection-juleg
+    license: MIT
+    images: ~3000
+    classes: [varies]
+    perspective: mixed
+    priority: 2
+
+  - workspace: yolo-datasets-ymdve
+    project: military-object-detection-uxkcn
+    license: CC BY 4.0
+    images: 2636
+    classes: [tank, military vehicle, soldier]
+    perspective: mixed
+    priority: 2
+
+  - workspace: drgladwell
+    project: military-vehicle-detection-yzlvf
+    license: CC BY 4.0
+    images: 4000
+    classes: [tank]
+    perspective: long-range ~32px
+    priority: 2
+    note: для long-distance training (наш 800m use case)
+
+  - workspace: leonardo-leonardo-jgm1m
+    project: artillery
+    license: CC BY 4.0
+    images: 609
+    classes: [artillery]
+    perspective: ground
+    priority: 3
+
+kaggle:
+  - ref: rawsi18/military-assets-dataset-12-classes-yolo8
+    license: CC BY 4.0
+    images: 26315
+    classes: [military_vehicle, soldier, artillery, trench, aircraft, warship, ...]
+    perspective: mixed
+    priority: 1
+    note: TOP — найбільший
