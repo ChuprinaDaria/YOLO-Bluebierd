@@ -1,74 +1,114 @@
-# datasetforge roadmap
+# datasetforge roadmap (HF diffusion approach)
 
-## Чому пишемо самі
+## Стек
 
-`synthetic_apc_726` згенерував `dg@Mac` колись через невідомий нам tool (можливо їх власний прототип). Production-grade engine ми ще не маємо. Треба написати свій — це не optional модуль, це фундамент warm-start даних.
+Усе через **HuggingFace** + **HF Jobs**. Без Blender, без купівлі 3D-моделей.
 
-## Фази
+```
+HF model       Role
+─────────────────────────────────────────────────────
+FLUX.1-dev     base image generation (better than SDXL для realism)
+SDXL           fallback / швидше для batch
+LoRA (own)     fine-tune на synthetic_apc_726 style
+GLIGEN         text + bbox conditional (тре генерує обʼєкт у конкретному bbox)
+GroundingDINO  open-vocab detection — для bbox refinement
+SAM2           segmentation refinement (опційно)
+```
 
-### Phase 0 — Foundation (тиждень 1-2)
+## Phase 0 — HF Foundation (1-2 дні)
 
-- ✅ Архітектура: задизайнена в `datasetforge/README.md`
-- ✅ Skeleton: `engine/`, `output/metadata.py`, configs (порожні класи з NotImplementedError)
-- 🔴 **Blender install + headless verification** на машині розробника (НЕ на Phenom II — без SIMD рендер впаде). HF Jobs з GPU чи окремий dev-вузол.
-- 🔴 Один end-to-end "Hello World" рендер: куб на полі з камерою на 300м.
+- HF token у `.env` (вже є).
+- `hf` CLI + skill `huggingface-skills:hugging-face-jobs` готові.
+- Перший test: `FLUX.1-dev` згенерує одне зображення з prompt `"Russian T-72 tank in muddy Ukrainian field, aerial drone view, 400m altitude, oblique angle"` — sanity.
+- Запустити через `hf jobs run` на A10G/T4.
 
-### Phase 1 — MVP single-class (тиждень 3-4)
+## Phase 1 — GLIGEN bbox-conditional MVP (3-5 днів)
 
-- 🔴 Імпорт першої 3D-моделі (наприклад tank: T-72B3 з TurboSquid/CGTrader).
-- 🔴 Камера-rig: altitude/angle/HFOV з конфігу.
-- 🔴 Bbox extractor: 3D bound_box → 2D YOLO bbox через `bpy_extras.world_to_camera_view`.
-- 🔴 Output: YOLO label + metadata JSON.
-- 🔴 Сценарій: 100 кадрів tank, 1 ландшафт (field), 1 сезон (summer) — sanity.
-- 🔴 Інспекція через `dataset/inspect.py` → bbox distribution має матчити `synthetic_apc_726` стилю (мediana ~60 px, мін ≥13).
+- GLIGEN pipeline через `diffusers`:
+  ```python
+  pipe = StableDiffusionGLIGENPipeline.from_pretrained(
+      "masterful/gligen-1-4-generation-text-box", ...
+  )
+  images = pipe(
+      prompt="Russian T-72 tank in muddy field, aerial view, 400m, oblique",
+      gligen_phrases=["T-72 tank"],
+      gligen_boxes=[[0.3, 0.4, 0.55, 0.6]],   # YOLO bbox у normalized (xmin, ymin, xmax, ymax)
+      num_images_per_prompt=4,
+  ).images
+  ```
+- Output: image + ВЖЕ ВІДОМИЙ bbox (не треба annotation step).
+- Sanity 100 кадрів tank, рандом altitude/angle/landscape.
+- Інспекція через `dataset/inspect.py` — distribution має бути similar до `synthetic_apc_726`.
 
-### Phase 2 — Multi-condition (тиждень 5-6)
+## Phase 2 — Style LoRA на synthetic_apc_726 (1 тиж)
 
-- 🔴 Backgrounds asset library: OpenAerialMap + VisDrone + OSINT перші 100 frames.
-- 🔴 Сезонні текстури: ground PBR за seasons (literature: green grass, mud, snow, bare soil).
-- 🔴 Lighting: sun angle відповідно до time_of_day + season.
-- 🔴 Degradation pipeline: motion_blur, jpeg, atmosphere overlay.
-- 🔴 Hard negatives: 15% ratio, background-only + civilian context.
-- 🔴 Сценарій: 1000 кадрів tank, повна стратифікація.
-- 🔴 Train baseline yolo11n on this — sanity check that mAP > random.
+- Fine-tune **SDXL LoRA** на 726 кадрах APC.
+  - `huggingface-skills:hugging-face-model-trainer` skill — підтримує LoRA.
+  - HF Jobs з A100, ~1-2 години, $5-10.
+- LoRA вивчає: oblique drone perspective, GSD distribution, lighting, текстури.
+- Result: prompts тепер генерують зображення в правильному стилі.
 
-### Phase 3 — Multi-class scale (тиждень 7-10)
+## Phase 3 — Batch для 10 класів (1-2 тиж)
 
-- 🔴 Імпорт усіх 10 класів (3D-моделей).
-- 🔴 Batch orchestrator з parallelism (HF Job per class).
-- 🔴 Конфіги per-class: `configs/v1_<class>.yaml`.
-- 🔴 Full datasetforge v1.0.0 release: 12,000 кадрів total (стратифіковано як у `taxonomy_v3.md`).
-- 🔴 Push до приватного HF repo `Dariachup/yolo-bluebierd-data` з тегом `df-v1.0.0`.
+- `prompts/<class>.yaml` per клас з вariantами скриптів:
+  ```yaml
+  class: tank
+  models: [T-72B3, T-80, T-90]
+  prompts:
+    - "Russian {model} on green Ukrainian wheat field, summer, sunny, aerial drone view {altitude}m, oblique {angle} degrees"
+    - "Russian {model} in muddy autumn field, rasputitsa, overcast, drone view {altitude}m, oblique {angle}"
+    - "Russian {model} on snow-covered ground with shelterbelt nearby, winter, drone view {altitude}m, oblique {angle}"
+  variations:
+    altitude: [300, 400, 600, 800]
+    angle: [15, 30, 45, 60]
+  ```
+- Orchestrator: `pipelines/generate_class.py` — батч 1200 кадрів per клас.
+- HF Job parallel per клас.
 
-### Phase 4 — Iteration (постійно)
+## Phase 4 — Refinement через GroundingDINO + degradation (паралельно)
 
-- Залежно від evaluation на OSINT real eval set:
-  - Якщо `mAP_real` <<< `mAP_synthetic` → domain gap. Тюнинг degradation і backgrounds.
-  - Якщо false positive на лісосмугах → mine більше shelterbelt hard negatives.
-  - Якщо winter < summer recall → більше snow renders.
+- `auto_annotation/refine.py` — пропускає згенеровані кадри через GroundingDINO для verification:
+  - Якщо bbox confidence низька → відкидаємо кадр.
+  - Якщо знайдено additional obj of interest → додаємо bbox.
+- `degradation/`:
+  - `motion_blur.py` — kernel 3-9 px з рандом direction
+  - `jpeg.py` — q=60-95 рандом
+  - `atmosphere.py` — fog/haze overlay через PIL alpha blend
 
-## Reality-check: скільки часу і ресурсів
+## Phase 5 — Hard negatives (паралельно)
 
-| Етап | Time | Computе | $$ |
-|---|---|---|---|
-| Phase 0 | 1-2 тиж | local CPU | 0 |
-| 3D-моделі (Phase 1) | 1-2 тиж | — | $200-$1000 (CGTrader licenses, ~10-20 моделей) |
-| Phase 1 рендер | days | local або 1× HF GPU | $5-20 на 1k кадрів |
-| Phase 2-3 | 4-6 тиж | HF Jobs з GPU | $50-200 на 12k кадрів |
-| Backgrounds collection | parallel | — | 0 ($) + час |
+- Окремі промпти без військ техніки:
+  - "Empty Ukrainian wheat field, aerial drone view 400m"
+  - "Forest belt edge, drone view, winter, snow"
+  - "Destroyed burned tank wreckage, aerial drone view, smoke" (без bbox — це shum)
+  - "Civilian truck on road, aerial drone view"
+- ~2000 кадрів = 15-20% датасета.
 
-**Загалом ~2-3 місяці до stable v1.0.0** на одного програміста. З Brave1 access швидше — bypass більшої частини roadmap.
+## Compute & cost
 
-## Альтернатива: купити готовий синтетик-як-сервіс
+| Item | Est. |
+|---|---|
+| Phase 0 sanity | $1-2 |
+| Phase 1 MVP 100 frames | $5 |
+| Phase 2 LoRA fine-tune | $5-10 |
+| Phase 3 batch 12k frames | $30-50 |
+| Phase 4 GroundingDINO refine 12k | $5-10 |
+| **Total** | **~$50-100** |
 
-- Datagen.tech
-- Synthesis AI
-- Mostly AI
+Все на HF Jobs. Без локального GPU.
 
-Для military — рідко offer. Власний шлях більш реалістичний.
+## Timeline
 
-## Що паралельно НЕ блокується datasetforge
+**3-4 тижні до v1.0.0** на одного programmistа.
 
-- `training/`, `evaluation/`, `inference/`, `aim_assist/` модулі — пишемо архітектуру і workflow.
-- Pretrain на public ~68k — баг-зайнятість для backbone, низький пріоритет.
-- OSINT eval collection — окрема активність.
+## Що паралельно
+
+- `training/` skeleton (yolo11 train loop, HF Jobs orchestration)
+- `evaluation/` skeleton (mAP, per-class, real vs synthetic split)
+- `inference/` + `aim_assist/` skeletons
+- OSINT eval collection (~200-500 real drone frames)
+
+## Що НЕ блокує
+
+- Brave1 timeline — паралельний трек
+- Public datasets ~68k — pretrain backbone тільки, опційно
