@@ -58,3 +58,4 @@ checkpoints/
 .DS_Store
 Thumbs.db
 .tools/
+.firecrawl/
