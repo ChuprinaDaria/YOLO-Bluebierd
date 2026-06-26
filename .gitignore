@@ -12,6 +12,7 @@ docs/internal/
 .env
 .env.*
 !.env.example
+.env-runpod
 *.pem
 *.key
 

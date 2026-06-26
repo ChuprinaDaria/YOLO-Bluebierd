@@ -1,8 +1,9 @@
-"""datasetforge.engine — Blender-based synthetic frame generator.
+"""datasetforge.engine — Blender 3D composite render engine.
 
-Скелет. TODO: implement scene_builder, render, bbox_extractor.
-Запускається тільки через `blender --background --python <script>`, оскільки
-вимагає bpy.
+Запускається через BlenderProc:
+    blenderproc run datasetforge/engine/render_runner.py --config ... --n N --out OUT
+
+Локально модулі importable для linting/тестів (bpy/bproc — lazy import всередині build_scene).
 """
 
-__version__ = "0.1.0-dev"
+__version__ = "0.2.0-dev"

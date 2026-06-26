@@ -1,0 +1,56 @@
+#!/bin/bash
+# RunPod boot script для Blender+Flux smoke. Idempotent — re-running OK.
+# Очікує:
+#   - REPO_DIR (default /workspace/yolo-bluebierd)
+#   - HF_TOKEN env var (через RunPod "Pod env vars" UI)
+#   - Network volume mounted at /workspace/cache (для HF cache)
+
+set -e
+
+REPO_DIR="${REPO_DIR:-/workspace/yolo-bluebierd}"
+CACHE_DIR="${HF_HOME:-/workspace/cache/huggingface}"
+
+echo "[setup] REPO=$REPO_DIR HF_HOME=$CACHE_DIR"
+
+# 1. HF cache → network volume (BEFORE будь-яких HF imports)
+export HF_HOME="$CACHE_DIR"
+mkdir -p "$HF_HOME"
+if ! grep -qxF "export HF_HOME=$CACHE_DIR" ~/.bashrc 2>/dev/null; then
+    echo "export HF_HOME=$CACHE_DIR" >> ~/.bashrc
+fi
+
+# 2. System deps (для cv2, matplotlib, git)
+apt-get update -qq
+apt-get install -y --no-install-recommends libgl1 libglib2.0-0 git wget
+
+# 3. Python deps
+pip install --upgrade pip
+pip install -r "$REPO_DIR/requirements_diffusion.txt"
+
+# 4. HF whoami sanity — fail fast if token missing/invalid
+python - <<'PY'
+import os
+from huggingface_hub import whoami
+assert "HF_TOKEN" in os.environ, "HF_TOKEN не виставлений — set via RunPod 'Pod env vars'"
+user = whoami(token=os.environ["HF_TOKEN"])["name"]
+print(f"[hf] logged in as: {user}")
+PY
+
+# 5. Pre-warm Flux + Depth CN моделі на network volume
+python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+tok = os.environ["HF_TOKEN"]
+cache = os.environ["HF_HOME"]
+for repo in ("black-forest-labs/FLUX.1-dev",
+             "black-forest-labs/FLUX.1-Depth-dev"):
+    print(f"[snapshot] {repo}")
+    snapshot_download(repo, token=tok, cache_dir=cache,
+                      allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model",
+                                      "tokenizer/*", "scheduler/*"])
+print("[done] Flux + Depth CN cached")
+PY
+
+echo ""
+echo "[setup] complete."
+echo "→ Open notebook: $REPO_DIR/datasetforge/pipelines/runpod/notebook.ipynb"

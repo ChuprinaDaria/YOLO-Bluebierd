@@ -1,0 +1,83 @@
+# Phase 1 smoke — light_vehicle (cls 7).
+# Клон v1_apc_reference.yaml для GAZ Tigr / civilian car / mil-pickup.
+
+version: df-v1.0.0-dev
+seed: 42
+
+class:
+  name: light_vehicle
+  id: 7
+  models:
+    # Реальні файли у datasetforge/assets/models/light_vehicle/.
+    # render_runner.py globs *.glb/.gltf/.fbx/.obj/.blend і ігнорує цей список —
+    # тут лише документація для людей.
+    - gaz-2330_tigr.glb
+    - russian_gaz_tigr.glb
+    - russian_gaz_tigr_version_2.glb
+
+count: 20             # Phase 1 smoke; Phase 2 = 200; Phase 3 = 600
+image_size: [640, 640]               # Phase 1 (Blender-only) backward-compat
+image_size_diffusion: [1024, 1024]   # v2_smoke (Blender+Flux), Flux native res
+
+camera:
+  # distance_m — 3D line-of-sight камера→техніка.
+  # ВАЖЛИВО (tier per-class): light_vehicle ~4м. На distance>500м з hfov=15°
+  # це <17 px = шум. 700/1000м тут ВИРІЗАНО — це фізично безглузда комбінація
+  # для дрібних класів. Tank/AD/truck (8-12м) можуть тримати весь діапазон у власних
+  # configs. Див. labeling_guidelines.md / pixel_budget.md.
+  distance_m: [150, 200, 300, 400, 500]
+  # view_angle — елевація над горизонтом.
+  # 10-30° cruising oblique + 90° nadir для diversity ракурсів (НЕ для видимості).
+  view_angle_deg: [10, 15, 20, 25, 30, 90]
+  # hfov 15° = drone ISR telephoto (Mavic 3 Enterprise zoom, ScanEagle).
+  # УВАГА: це освічене вгадування. Реальна камера дрона не специфікована —
+  # коли буде spec, перерахувати lens (zoom-gimbal ~10-15° vs wide ~50-70°).
+  hfov_deg: 15
+  sensor:
+    width: 1920
+    height: 1080
+    modality: EO
+
+scene:
+  landscapes: [field, forest_belt, dirt_road]
+  seasons: [summer, autumn_mud, winter, spring]
+  weather: [clear, fog, haze, rain]
+  time_of_day: [day, dusk]
+
+degradation:
+  jpeg_quality: [60, 95]
+  motion_blur_px: [0, 8]
+  atmosphere_strength: [0.0, 0.4]
+
+hard_negatives:
+  ratio: 0.15
+  types:
+    - empty_landscape
+
+output:
+  format: yolo
+  split:
+    train: 0.7
+    valid: 0.2
+    test: 0.1
+  metadata_sidecar: true
+
+# Stage 3+4 — Flux depth-conditioned background inpaint. Default OFF —
+# Blender-only path (Phase 1) не торкаємо. v2_smoke notebook вмикає вручну.
+diffusion:
+  enabled: false
+  base_model: black-forest-labs/FLUX.1-dev
+  depth_controlnet: black-forest-labs/FLUX.1-Depth-dev
+  pipeline: FluxControlNetInpaintPipeline
+  inference_size: [1024, 1024]
+  steps: 30
+  guidance: 30.0
+  controlnet_scale: 0.6
+  mask_dilate_px: 4
+  mask_feather_px: 2
+  prompt_template: "aerial drone reconnaissance photo of {landscape} in {season}, {weather}, low {sun_cardinal} sun at {sun_elevation_deg:.0f} degrees elevation, from {altitude_m:.0f}m altitude at {view_angle_deg:.0f} degrees oblique angle, photorealistic, sharp focus, high detail"
+  negative_prompt: "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, text, watermark, ui, blurry, low quality, oversaturated"
+  seed_offset: 1000
+  relight:
+    enabled: false      # Gate 1 default off — clean pixel-identity proof
+    strength: 0.3

@@ -1,0 +1,30 @@
+# RunPod A100/H100 GPU stack. НЕ для локалі (Phenom II без AVX2 / sem GPU).
+# Локаль використовує основний requirements.txt (pinned numpy<2 etc).
+
+# Diffusion stack
+diffusers>=0.31,<0.33
+transformers>=4.44
+accelerate>=0.33
+peft>=0.13
+sentencepiece
+safetensors
+huggingface_hub>=0.25
+
+# Torch — RunPod pytorch template вже має, не оверрайдити версію
+torch>=2.4
+torchvision
+
+# Image I/O — cv2 використовується для AOV read/write
+opencv-python-headless>=4.10,<4.11
+pillow>=10,<13
+
+# Render pipeline
+blenderproc>=2.7
+h5py
+pyyaml>=6
+
+# Numeric stack
+numpy>=1.26
+
+# Viz у notebook
+matplotlib
