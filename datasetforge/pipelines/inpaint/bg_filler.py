@@ -1,11 +1,14 @@
 """Flux depth-conditioned background inpaint stage.
 
-Vehicle pixels frozen via dilated+feathered mask. Bbox unchanged.
-Runs на RunPod A100/H100 80GB, bf16, no offload.
+Використовує `black-forest-labs/FLUX.1-Depth-dev` як інпейнт-базу — це
+офіційний BFL model з вбудованим depth conditioning (не окремий ControlNet).
+Завантажується одним викликом, depth подається через `control_image`.
 
-Public surface:
-    load_pipeline(diffusion_cfg, device="cuda") -> FluxControlNetInpaintPipeline
-    inpaint_one(pipe, rgb_path, depth_path, mask_path, meta_path, out_path, cfg) -> dict
+Vehicle pixels frozen через mask INVERSION (FLUX inpaint convention:
+mask=255 → inpaint, mask=0 → keep). Stage 1 mask = vehicle@255, тому
+у `_build_inpaint_mask` інвертуємо: vehicle stays, bg gets repainted.
+
+RunPod A100/H100/Blackwell 80GB+, bf16, no offload.
 """
 
 from __future__ import annotations
@@ -23,20 +26,11 @@ from datasetforge.pipelines.inpaint.prompts import build_prompt
 
 
 def load_pipeline(diffusion_cfg: dict, device: str = "cuda"):
-    """Завантажує FluxControlNetInpaintPipeline + Depth ControlNet у GPU.
+    """Завантажує FluxControlInpaintPipeline у GPU. bf16, no offload."""
+    from diffusers import FluxControlInpaintPipeline
 
-    Очікує що моделі вже у HF cache (setup.sh робить snapshot_download).
-    bf16, full GPU (без offload — 80GB вистачає).
-    """
-    from diffusers import FluxControlNetInpaintPipeline, FluxControlNetModel
-
-    cn = FluxControlNetModel.from_pretrained(
-        diffusion_cfg["depth_controlnet"],
-        torch_dtype=torch.bfloat16,
-    )
-    pipe = FluxControlNetInpaintPipeline.from_pretrained(
+    pipe = FluxControlInpaintPipeline.from_pretrained(
         diffusion_cfg["base_model"],
-        controlnet=cn,
         torch_dtype=torch.bfloat16,
     )
     pipe.to(device)
@@ -48,10 +42,9 @@ def _load_depth_normalized(depth_path: Path, target_hw: tuple[int, int]) -> Imag
     depth_raw = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
     if depth_raw is None:
         raise FileNotFoundError(f"depth not loaded: {depth_path}")
-    depth_m = depth_raw.astype(np.float32) / 1000.0  # PNG зберігалось як depth_mm
+    depth_m = depth_raw.astype(np.float32) / 1000.0
     h, w = target_hw
     depth_resized = cv2.resize(depth_m, (w, h), interpolation=cv2.INTER_LINEAR)
-    # Per-frame percentile clip відсікає sky/sentinel outliers.
     finite = depth_resized[np.isfinite(depth_resized)]
     if finite.size == 0:
         lo, hi = 0.0, 1.0
@@ -67,24 +60,30 @@ def _load_depth_normalized(depth_path: Path, target_hw: tuple[int, int]) -> Imag
 
 def _build_inpaint_mask(mask_path: Path, target_hw: tuple[int, int],
                         dilate_px: int, feather_px: int) -> Image.Image:
-    """Bin >=128 → dilate (ellipse kernel) → Gaussian feather. Для Flux mask_image."""
+    """Build FLUX inpaint mask: 255 over BACKGROUND (inpaint), 0 over VEHICLE (keep).
+
+    Stage 1 mask = vehicle@255. Тут: dilate+feather vehicle area, потім INVERT —
+    щоб vehicle лишився заморожений, а bg перемалювався.
+    """
     mask_raw = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask_raw is None:
         raise FileNotFoundError(f"mask not loaded: {mask_path}")
     h, w = target_hw
     mask_resized = cv2.resize(mask_raw, (w, h), interpolation=cv2.INTER_NEAREST)
-    mask_bin = (mask_resized >= 128).astype(np.uint8) * 255
+    veh_mask = (mask_resized >= 128).astype(np.uint8) * 255
     if dilate_px > 0:
         k = dilate_px
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))
-        mask_bin = cv2.dilate(mask_bin, kernel, iterations=1)
+        veh_mask = cv2.dilate(veh_mask, kernel, iterations=1)
     if feather_px > 0:
         sigma = float(feather_px)
         ksize = max(3, int(2 * round(3 * sigma) + 1))
         if ksize % 2 == 0:
             ksize += 1
-        mask_bin = cv2.GaussianBlur(mask_bin, (ksize, ksize), sigma)
-    return Image.fromarray(mask_bin)
+        veh_mask = cv2.GaussianBlur(veh_mask, (ksize, ksize), sigma)
+    # Invert: FLUX inpaint expects 255=inpaint, 0=keep.
+    inpaint_mask = 255 - veh_mask
+    return Image.fromarray(inpaint_mask)
 
 
 def inpaint_one(
@@ -96,12 +95,11 @@ def inpaint_one(
     out_path: Path,
     diffusion_cfg: dict,
 ) -> dict[str, Any]:
-    """Один кадр: RGB + depth-CN + frozen-mask → AI-bg PNG.
+    """Один кадр: RGB + depth-conditioning + frozen-vehicle-mask → AI-bg PNG.
 
-    Vehicle pixels у output Flux MAY перемалювати — це нормально, Stage 4 (composite.py)
-    бере ai_bg тільки де mask_compose=0, vehicle pixels — з raw rgb.
-
-    Returns: sidecar dict для merge у metadata.json.
+    Vehicle area може мати artifacts на edges (feathered зона) — це OK, бо
+    Stage 4 composite використовує undilated binary mask і повертає vehicle
+    pixels назад інтактними.
     """
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     inf_h, inf_w = diffusion_cfg["inference_size"]
@@ -118,35 +116,41 @@ def inpaint_one(
     seed = int(metadata.get("seed", 0)) + int(diffusion_cfg["seed_offset"])
     generator = torch.Generator("cpu").manual_seed(seed)
 
-    result = pipe(
+    call_kwargs = dict(
         prompt=positive,
-        negative_prompt=negative,
         image=rgb,
         mask_image=mask_inpaint,
         control_image=depth_ctrl,
-        controlnet_conditioning_scale=float(diffusion_cfg["controlnet_scale"]),
+        strength=float(diffusion_cfg.get("strength", 1.0)),
         guidance_scale=float(diffusion_cfg["guidance"]),
         num_inference_steps=int(diffusion_cfg["steps"]),
         height=inf_h,
         width=inf_w,
         generator=generator,
-    ).images[0]
+    )
+    # FLUX pipelines у diffusers >=0.31 приймають negative_prompt;
+    # якщо version не підтримує — fallback без.
+    try:
+        result = pipe(negative_prompt=negative, **call_kwargs).images[0]
+        used_negative = True
+    except TypeError:
+        result = pipe(**call_kwargs).images[0]
+        used_negative = False
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.save(out_path)
 
     return {
         "base_model": diffusion_cfg["base_model"],
-        "depth_controlnet": diffusion_cfg["depth_controlnet"],
         "pipeline": diffusion_cfg["pipeline"],
         "inference_size": [inf_h, inf_w],
         "steps": int(diffusion_cfg["steps"]),
         "guidance": float(diffusion_cfg["guidance"]),
-        "controlnet_scale": float(diffusion_cfg["controlnet_scale"]),
+        "strength": float(diffusion_cfg.get("strength", 1.0)),
         "mask_dilate_px": int(diffusion_cfg["mask_dilate_px"]),
         "mask_feather_px": int(diffusion_cfg["mask_feather_px"]),
         "seed": seed,
         "prompt": positive,
-        "negative_prompt": negative,
+        "negative_prompt": negative if used_negative else None,
         "depth_percentile_clip": [1.0, 99.0],
     }

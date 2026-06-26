@@ -36,19 +36,19 @@ user = whoami(token=os.environ["HF_TOKEN"])["name"]
 print(f"[hf] logged in as: {user}")
 PY
 
-# 5. Pre-warm Flux + Depth CN моделі на network volume
+# 5. Pre-warm Flux Depth-dev model на network volume.
+# Один model (~24GB) — depth conditioning baked у ваги, окремий ControlNet не потрібен.
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 tok = os.environ["HF_TOKEN"]
 cache = os.environ["HF_HOME"]
-for repo in ("black-forest-labs/FLUX.1-dev",
-             "black-forest-labs/FLUX.1-Depth-dev"):
-    print(f"[snapshot] {repo}")
-    snapshot_download(repo, token=tok, cache_dir=cache,
-                      allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model",
-                                      "tokenizer/*", "scheduler/*"])
-print("[done] Flux + Depth CN cached")
+repo = "black-forest-labs/FLUX.1-Depth-dev"
+print(f"[snapshot] {repo} (~24GB, перший раз 10-20 хв на 1Gbps лінк)")
+# Без allow_patterns — fnmatch '*' НЕ matches '/', тому patterns скіпають
+# weights у subdirectories (transformer/, text_encoder_2/ etc).
+snapshot_download(repo, token=tok, cache_dir=cache)
+print("[done] FLUX.1-Depth-dev cached")
 PY
 
 echo ""

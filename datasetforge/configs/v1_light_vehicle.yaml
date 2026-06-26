@@ -64,20 +64,22 @@ output:
 
 # Stage 3+4 — Flux depth-conditioned background inpaint. Default OFF —
 # Blender-only path (Phase 1) не торкаємо. v2_smoke notebook вмикає вручну.
+#
+# Stack: FLUX.1-Depth-dev — офіційний BFL inpaint з вбудованим depth conditioning.
+# НЕ потребує окремого ControlNet — depth подається через control_image параметр.
 diffusion:
   enabled: false
-  base_model: black-forest-labs/FLUX.1-dev
-  depth_controlnet: black-forest-labs/FLUX.1-Depth-dev
-  pipeline: FluxControlNetInpaintPipeline
+  base_model: black-forest-labs/FLUX.1-Depth-dev
+  pipeline: FluxControlInpaintPipeline
   inference_size: [1024, 1024]
   steps: 30
-  guidance: 30.0
-  controlnet_scale: 0.6
-  mask_dilate_px: 4
-  mask_feather_px: 2
+  guidance: 10.0          # Flux Depth-dev sweet spot 7-15
+  strength: 1.0           # 1.0 = повний replacement у masked area (bg)
+  mask_dilate_px: 4       # safety belt навколо vehicle alpha
+  mask_feather_px: 2      # softer seam між vehicle і AI bg
   prompt_template: "aerial drone reconnaissance photo of {landscape} in {season}, {weather}, low {sun_cardinal} sun at {sun_elevation_deg:.0f} degrees elevation, from {altitude_m:.0f}m altitude at {view_angle_deg:.0f} degrees oblique angle, photorealistic, sharp focus, high detail"
   negative_prompt: "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, text, watermark, ui, blurry, low quality, oversaturated"
   seed_offset: 1000
   relight:
-    enabled: false      # Gate 1 default off — clean pixel-identity proof
+    enabled: false        # Gate 1 default off — clean pixel-identity proof
     strength: 0.3
