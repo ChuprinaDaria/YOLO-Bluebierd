@@ -39,11 +39,18 @@ camera:
     modality: EO
 
 scene:
-  landscapes: [field, forest_belt, dirt_road]
+  # Bias до road-сцен: «техніка посеред поля» — це коли road-landscapes рідкі.
+  # dirt_road двічі + road_under_vehicle (нижче) кладе колію під техніку у Blender.
+  landscapes: [dirt_road, field, dirt_road, forest_belt]
   seasons: [summer, autumn_mud, winter, spring]
   weather: [clear, fog, haze, rain]
   time_of_day: [day, dusk]
+  # Підкладає вузьку ґрунтову колію під техніку у Blender (depth+RGB бачать дорогу,
+  # Flux її добудовує). True → для road-landscapes; field лишається без дороги.
+  road_under_vehicle: true
 
+# DEPRECATED — НЕ читається жодним кодом. Камерна деградація тепер у блоці
+# `polish:` нижче (albumentations, Stage 5). Лишено для git-історії; не редагуй тут.
 degradation:
   jpeg_quality: [60, 95]
   motion_blur_px: [0, 8]
@@ -73,13 +80,61 @@ diffusion:
   pipeline: FluxControlInpaintPipeline
   inference_size: [1024, 1024]
   steps: 30
-  guidance: 10.0          # Flux Depth-dev sweet spot 7-15
-  strength: 1.0           # 1.0 = повний replacement у masked area (bg)
+  # guidance 10 давав «пластик» + оверсатурацію. Flux-dev natural look ~3-4;
+  # нижче guidance = фотографічніше, менше CGI-гладкості. Sweep 3.0-5.0.
+  guidance: 3.5
+  # FLUX-dev distilled → negative_prompt працює ЛИШЕ при true_cfg_scale>1
+  # (це ≈×2 час інференсу). 1.0 = негатив ігнорується; 2-4 = негатив активний.
+  true_cfg_scale: 1.0
+  # Realism-LoRA — найсильніший анти-«пластик». enabled=false у бібліотечному
+  # дефолті (опт-ін, бо тягне ваги з HF). Notebook SETTINGS вмикає для смоуку.
+  # LoRA для FLUX.1-dev зазвичай застосовні і до Depth-dev (ті самі attention).
+  lora:
+    enabled: false
+    repo: XLabs-AI/flux-RealismLora
+    weight_name: lora.safetensors
+    adapter_name: realism
+    scale: 0.8
+  # strength 1.0 = повністю викидав Blender-ґрунт (правильний aerial масштаб) і
+  # Flux вигадував текстуру не в тому масштабі. <1 лишає Blender-структуру/масштаб
+  # і лише «фотореалізує» її. Sweep 0.80-0.95.
+  strength: 0.88
   mask_dilate_px: 4       # safety belt навколо vehicle alpha
   mask_feather_px: 2      # softer seam між vehicle і AI bg
-  prompt_template: "aerial drone reconnaissance photo of {landscape} in {season}, {weather}, low {sun_cardinal} sun at {sun_elevation_deg:.0f} degrees elevation, from {altitude_m:.0f}m altitude at {view_angle_deg:.0f} degrees oblique angle, photorealistic, sharp focus, high detail"
-  negative_prompt: "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, text, watermark, ui, blurry, low quality, oversaturated"
+  # Базовий template — без «cinematic / sharp focus / high detail». Landscape-cue,
+  # scale-cue і camera-cue дочіпляє prompts.build_prompt (drone EO, не кінокадр).
+  prompt_template: "aerial drone reconnaissance photo of a {landscape} in {season}, {weather}, {sun_cardinal} sunlight at {sun_elevation_deg:.0f} degrees elevation, shot from {altitude_m:.0f} meters altitude at {view_angle_deg:.0f} degrees oblique top-down angle"
+  # Опційні override для prompts.py (закоментовано = вшиті дефолти з drone-realism).
+  # landscape_cues: {dirt_road: "...", field: "...", forest_belt: "..."}
+  # scale_cue: "..."
+  # camera_cue: "..."
+  negative_prompt: "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, text, watermark, ui, 3d render, cgi, render, video game, unreal engine, octane, blender, plastic, glossy, waxy, airbrushed, cinematic, dramatic lighting, golden hour, lens flare, bokeh, depth of field, hdr, oversaturated, vivid, overprocessed, masterpiece, artstation, oversharpened, illustration, painting, blurry, low quality"
   seed_offset: 1000
+  # Relight ON: техніка лита Blender-світлом ≠ Flux-фон. match_color робить
+  # per-channel exposure+white-balance match під фон (фікс «різної яскравості»).
   relight:
-    enabled: false        # Gate 1 default off — clean pixel-identity proof
-    strength: 0.3
+    enabled: true
+    strength: 0.55          # 0=без змін, 1=повна заміна під bg-середнє. Sweep 0.4-0.7.
+    match_color: true       # per-channel WB+exposure (false = тільки luma)
+  # Camera-realism degradation — щоб не виглядало як кінорендер, а як зйомка з дрона.
+  # Накладається на ВЕСЬ composite (зшиває техніку+фон у єдину «камеру»).
+  # Камерна деградація ПЕРЕНЕСЕНА у Stage 5 `polish:` (нижче, albumentations).
+  # composite тепер лишає чисту основу; «псує» під камеру вже polish.
+
+# Stage 5 — «шліфування поверх» через albumentations (shared/polish.py).
+# Туман/зерно/шум/jpeg/blur — post-processing, НЕ робота генеративної моделі.
+# Той самий augmentation наближає датасет до реального дронового відео.
+# Усі трансформи pixel-only → bbox/мітки НЕ рухаються. Спільний для всіх 3 пайплайнів.
+# Кожен блок: false щоб вимкнути; p=ймовірність; решта — діапазони albumentations 2.x.
+polish:
+  enabled: true
+  iso_noise:           {p: 0.7,  color_shift: [0.01, 0.05], intensity: [0.1, 0.5]}
+  gauss_noise:         {p: 0.35, std_range: [0.02, 0.07]}   # частка від 255
+  motion_blur:         {p: 0.3,  blur_limit: [3, 7]}
+  defocus:             {p: 0.15, radius: [1, 3]}
+  fog:                 {p: 0.25, fog_coef_range: [0.05, 0.25], alpha_coef: 0.08}
+  brightness_contrast: {p: 0.5,  brightness: 0.12, contrast: 0.12}
+  chromatic:           {p: 0.3,  primary: 0.02, secondary: 0.01}
+  downscale:           {p: 0.2,  scale_range: [0.6, 0.9]}
+  jpeg:                {p: 0.9,  quality: [60, 85]}         # головний «дрон/телефон» tell
+  seed_offset: 9000

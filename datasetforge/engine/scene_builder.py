@@ -40,6 +40,9 @@ class SceneRequest:
     image_w: int
     image_h: int
     seed: int
+    # Підкласти ґрунтову колію під техніку (для road-landscapes). Дає depth+RGB
+    # реальну дорогу, яку Flux добудовує — фікс «техніка посеред поля».
+    road_under_vehicle: bool = False
 
 
 def build_scene(req: SceneRequest):
@@ -195,6 +198,32 @@ def build_scene(req: SceneRequest):
             str(req.ground_texture_path), material_name=f"ground_{req.season}"
         )
         ground.replace_materials(gmat)
+
+    # 2b. Road strip під технікою (опційно, для road-landscapes).
+    # Вузька темніша ґрунтова смуга вздовж heading техніки (z_rot). Дає Flux у
+    # depth+RGB реальну дорогу замість «техніка посеред поля». Guarded — будь-яка
+    # помилка тут не валить рендер (road = nice-to-have, не критичний).
+    ROAD_LANDSCAPES = ("dirt_road", "forest_belt")
+    if req.road_under_vehicle and req.landscape in ROAD_LANDSCAPES:
+        try:
+            road_len_m = 70.0
+            road_wid_m = 5.0
+            road = bproc.object.create_primitive(
+                "PLANE", scale=[road_len_m / 2.0, road_wid_m / 2.0, 1.0])
+            # Трохи над ground (z=0) щоб не було z-fighting; на aerial масштабі непомітно.
+            road.set_location([float(center[0]), float(center[1]), 0.03])
+            road.set_rotation_euler([0.0, 0.0, z_rot])  # вздовж heading техніки
+            road.set_cp("category_id", 0)               # background, не ламає segmentation
+            road_mat = bproc.material.create("dirt_road")
+            # Темно-коричнева утоптана земля, матова — контраст до трав'яного ground.
+            road_mat.set_principled_shader_value("Base Color", [0.21, 0.16, 0.11, 1.0])
+            road_mat.set_principled_shader_value("Roughness", 1.0)
+            road_mat.set_principled_shader_value("Specular", 0.05)
+            road.replace_materials(road_mat)
+            print(f"[road] strip {road_len_m:.0f}×{road_wid_m:.0f}m під технікою "
+                  f"(landscape={req.landscape})")
+        except Exception as exc:
+            print(f"[road] skip (non-fatal): {exc.__class__.__name__}: {exc}")
 
     # 3. World HDRI sky lighting (strength 2.0 — default 1.0 дає silhouette)
     if req.hdri_path.exists():

@@ -135,6 +135,7 @@ def main(argv=None):
             image_w=img_w,
             image_h=img_h,
             seed=seed,
+            road_under_vehicle=bool(scene_cfg.get("road_under_vehicle", False)),
         )
 
         bproc.utility.reset_keyframes()

@@ -2,13 +2,25 @@
 # Локаль використовує основний requirements.txt (pinned numpy<2 etc).
 
 # Diffusion stack
-diffusers>=0.31,<0.33
-transformers>=4.44
+# ⚠ Ліцензії: FLUX.1-Depth-dev (#1) і FLUX.1-Fill-dev (#3) — NON-COMMERCIAL.
+#   Qwen-Image-Edit-2509 (#2) — Apache-2.0 (для BlueBird-прод бери Qwen).
+# diffusers >=0.36 — потрібно для QwenImageEditPlusPipeline (#2); також покриває
+# FluxFillPipeline (#3, >=0.32) і існуючий FluxControlInpaintPipeline (#1).
+diffusers>=0.36
+transformers>=4.49          # Qwen2.5-VL text encoder
 accelerate>=0.33
 peft>=0.13
 sentencepiece
 safetensors
 huggingface_hub>=0.25
+
+# Stage 5 polish — albumentations (той самий пін, що requirements.txt).
+# notebook ставить ЛИШЕ цей файл, тому albumentations має бути тут.
+albumentations>=2.0,<2.1
+
+# Квантизація для Kaggle 16GB (gguf-Q4) — для bf16/RunPod не потрібно.
+gguf
+optimum-quanto
 
 # Torch — RunPod pytorch template вже має, не оверрайдити версію
 torch>=2.4
