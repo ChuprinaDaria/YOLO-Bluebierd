@@ -49,6 +49,8 @@ scene:
   # Flux її добудовує). True → для road-landscapes; field лишається без дороги.
   road_under_vehicle: true
 
+# DEPRECATED — НЕ читається жодним кодом. Камерна деградація тепер у блоці
+# `polish:` нижче (albumentations, Stage 5). Лишено для git-історії; не редагуй тут.
 degradation:
   jpeg_quality: [60, 95]
   motion_blur_px: [0, 8]

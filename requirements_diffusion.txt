@@ -2,6 +2,8 @@
 # Локаль використовує основний requirements.txt (pinned numpy<2 etc).
 
 # Diffusion stack
+# ⚠ Ліцензії: FLUX.1-Depth-dev (#1) і FLUX.1-Fill-dev (#3) — NON-COMMERCIAL.
+#   Qwen-Image-Edit-2509 (#2) — Apache-2.0 (для BlueBird-прод бери Qwen).
 # diffusers >=0.36 — потрібно для QwenImageEditPlusPipeline (#2); також покриває
 # FluxFillPipeline (#3, >=0.32) і існуючий FluxControlInpaintPipeline (#1).
 diffusers>=0.36
