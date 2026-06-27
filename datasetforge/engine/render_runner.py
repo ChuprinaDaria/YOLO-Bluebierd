@@ -110,6 +110,13 @@ def main(argv=None):
         "cy": float(img_h / 2.0),
     }
 
+    bproc.renderer.set_max_amount_of_samples(64)
+    bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
+    if args.depth_aov:
+        bproc.renderer.enable_depth_output(activate_antialiasing=False)
+    if args.normal_aov:
+        bproc.renderer.enable_normals_output()
+
     for i, cam_sample in enumerate(samples):
         seed = args.seed + i
         season = scene_cfg["seasons"][i % len(scene_cfg["seasons"])]
@@ -142,12 +149,6 @@ def main(argv=None):
         _, _, sun_info = build_scene(req)
         sun_cardinal = azimuth_to_cardinal(sun_info["sun_azimuth_deg"])
 
-        bproc.renderer.set_max_amount_of_samples(64)
-        bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
-        if args.depth_aov:
-            bproc.renderer.enable_depth_output(activate_antialiasing=False)
-        if args.normal_aov:
-            bproc.renderer.enable_normals_output()
         data = bproc.renderer.render()
 
         # Тимчасова COCO папка, потім конвертуємо у YOLO
