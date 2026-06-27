@@ -81,6 +81,18 @@ diffusion:
   # guidance 10 давав «пластик» + оверсатурацію. Flux-dev natural look ~3-4;
   # нижче guidance = фотографічніше, менше CGI-гладкості. Sweep 3.0-5.0.
   guidance: 3.5
+  # FLUX-dev distilled → negative_prompt працює ЛИШЕ при true_cfg_scale>1
+  # (це ≈×2 час інференсу). 1.0 = негатив ігнорується; 2-4 = негатив активний.
+  true_cfg_scale: 1.0
+  # Realism-LoRA — найсильніший анти-«пластик». enabled=false у бібліотечному
+  # дефолті (опт-ін, бо тягне ваги з HF). Notebook SETTINGS вмикає для смоуку.
+  # LoRA для FLUX.1-dev зазвичай застосовні і до Depth-dev (ті самі attention).
+  lora:
+    enabled: false
+    repo: XLabs-AI/flux-RealismLora
+    weight_name: lora.safetensors
+    adapter_name: realism
+    scale: 0.8
   # strength 1.0 = повністю викидав Blender-ґрунт (правильний aerial масштаб) і
   # Flux вигадував текстуру не в тому масштабі. <1 лишає Blender-структуру/масштаб
   # і лише «фотореалізує» її. Sweep 0.80-0.95.

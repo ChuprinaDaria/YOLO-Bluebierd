@@ -43,11 +43,13 @@ _DEFAULT_SCALE_CUE = (
     "vegetation appears as tiny fine texture, no large foreground objects"
 )
 
-# Камера: amateur drone / EO sensor, НЕ cinematic. Це прибирає «пластик» + «кіно».
+# Камера: «погана» зйомка з дрона, НЕ cinematic. Терміни, які FLUX точно розуміє
+# (grainy / surveillance / low-resolution / jpeg artifacts), а не «EO sensor».
 _DEFAULT_CAMERA_CUE = (
-    "amateur UAV reconnaissance still, consumer drone EO camera, flat natural "
-    "daylight, slightly soft focus, faint sensor noise and mild jpeg compression, "
-    "muted realistic colors, unedited ungraded footage"
+    "low-resolution aerial surveillance footage, grainy telephoto drone shot, "
+    "overcast flat lighting, slightly soft focus, visible sensor noise and "
+    "jpeg compression artifacts, muted desaturated colors, "
+    "candid unedited photo, amateur photo"
 )
 
 _DEFAULT_NEGATIVE = (

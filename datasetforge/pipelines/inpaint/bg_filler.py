@@ -26,7 +26,13 @@ from datasetforge.pipelines.inpaint.prompts import build_prompt
 
 
 def load_pipeline(diffusion_cfg: dict, device: str = "cuda"):
-    """Завантажує FluxControlInpaintPipeline у GPU. bf16, no offload."""
+    """Завантажує FluxControlInpaintPipeline у GPU. bf16, no offload.
+
+    Опційно вантажить realism-LoRA (`diffusion_cfg["lora"]`) — це найсильніший
+    важіль проти «пластику», сильніший за формулювання промпта. LoRA треновані
+    на FLUX.1-dev зазвичай застосовні і до Depth-dev (ті самі attention-шари),
+    але не гарантовано — тому під try/except, фейл не валить pipeline.
+    """
     from diffusers import FluxControlInpaintPipeline
 
     pipe = FluxControlInpaintPipeline.from_pretrained(
@@ -34,6 +40,23 @@ def load_pipeline(diffusion_cfg: dict, device: str = "cuda"):
         torch_dtype=torch.bfloat16,
     )
     pipe.to(device)
+
+    lora_cfg = diffusion_cfg.get("lora") or {}
+    if lora_cfg.get("enabled") and lora_cfg.get("repo"):
+        adapter = str(lora_cfg.get("adapter_name", "realism"))
+        scale = float(lora_cfg.get("scale", 0.8))
+        kw = {}
+        if lora_cfg.get("weight_name"):
+            kw["weight_name"] = lora_cfg["weight_name"]
+        try:
+            pipe.load_lora_weights(lora_cfg["repo"], adapter_name=adapter, **kw)
+            # set_adapters виставляє глобальну силу LoRA — не треба joint_attention scale.
+            pipe.set_adapters([adapter], adapter_weights=[scale])
+            print(f"[lora] loaded {lora_cfg['repo']} "
+                  f"(weight={lora_cfg.get('weight_name', 'auto')}) scale={scale}")
+        except Exception as exc:
+            print(f"[lora] FAILED ({exc.__class__.__name__}: {exc}) — "
+                  f"продовжуємо без LoRA")
     return pipe
 
 
@@ -128,14 +151,25 @@ def inpaint_one(
         width=inf_w,
         generator=generator,
     )
-    # FLUX pipelines у diffusers >=0.31 приймають negative_prompt;
-    # якщо version не підтримує — fallback без.
-    try:
-        result = pipe(negative_prompt=negative, **call_kwargs).images[0]
+
+    # FLUX-dev — guidance-distilled: negative_prompt діє ТІЛЬКИ коли true_cfg_scale>1
+    # (інакше CFG не рахується і негатив ігнорується). true_cfg_scale>1 ≈ ×2 час.
+    # Передаємо лише ті kwargs, які реально приймає __call__ цієї версії pipeline.
+    import inspect
+    sig_params = inspect.signature(pipe.__call__).parameters
+    true_cfg = float(diffusion_cfg.get("true_cfg_scale", 1.0) or 1.0)
+    used_negative = False
+    if "negative_prompt" in sig_params:
+        call_kwargs["negative_prompt"] = negative
         used_negative = True
-    except TypeError:
-        result = pipe(**call_kwargs).images[0]
-        used_negative = False
+    cfg_active = False
+    if "true_cfg_scale" in sig_params and true_cfg > 1.0:
+        call_kwargs["true_cfg_scale"] = true_cfg
+        cfg_active = True
+
+    result = pipe(**call_kwargs).images[0]
+    # negative «ефективний» лише якщо і переданий, і CFG увімкнено.
+    negative_effective = used_negative and cfg_active
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.save(out_path)
@@ -152,5 +186,9 @@ def inpaint_one(
         "seed": seed,
         "prompt": positive,
         "negative_prompt": negative if used_negative else None,
+        "true_cfg_scale": true_cfg,
+        "negative_effective": negative_effective,
+        "lora": (diffusion_cfg.get("lora") or {}).get("repo")
+                if (diffusion_cfg.get("lora") or {}).get("enabled") else None,
         "depth_percentile_clip": [1.0, 99.0],
     }
