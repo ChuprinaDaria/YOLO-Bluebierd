@@ -293,6 +293,54 @@ def build_scene(req: SceneRequest):
     cam.clip_start = 0.1
     cam.clip_end = max(50000.0, req.camera.distance_m * 5.0)
 
+    # ───────────────────────────────────────────────────────────────────────
+    # [diag] Ground-truth dump ПЕРЕД render(). Шукаємо чому vehicle виходить
+    # 1-3px замість ~21px (640px) / ~32px (1024px). Друкує реальні world-dims
+    # КОЖНОЇ меш-частини (ловить multi-mesh GLB де scale не застосувався до
+    # children / частини розкидані), фінальний combined bbox, позицію камери,
+    # target center, 3D-дистанцію і ОЧІКУВАНИЙ розмір техніки у пікселях.
+    # Якщо expected_px ≈ 21 але на RGB 3px → камера/intrinsics. Якщо combined
+    # max_dim ≠ ~5m або частини розкидані → scale normalization bug.
+    try:
+        focal_px = (req.image_w / 2.0) / math.tan(math.radians(req.camera.hfov_deg) / 2.0)
+        per_mesh = []
+        all_corners = []
+        for o in vehicle_meshes:
+            bb = np.array(o.get_bound_box(local_coords=False))
+            all_corners.append(bb)
+            d = bb.max(axis=0) - bb.min(axis=0)
+            c = (bb.max(axis=0) + bb.min(axis=0)) / 2
+            per_mesh.append((o.get_name() if hasattr(o, "get_name") else "?",
+                             d, c, np.array(o.get_scale()), np.array(o.get_location())))
+        comb = np.vstack(all_corners)
+        comb_dims = comb.max(axis=0) - comb.min(axis=0)
+        comb_center = (comb.max(axis=0) + comb.min(axis=0)) / 2
+        cam_world = np.array(cam_pose, dtype=float)
+        dist_3d = float(np.linalg.norm(cam_world - np.array(comb_center, dtype=float)))
+        expected_px = (float(comb_dims.max()) / dist_3d) * focal_px if dist_3d > 0 else -1
+        print("[diag] ===== scene ground-truth before render =====")
+        print(f"[diag] model={req.model_path.name}  n_meshes={len(vehicle_meshes)}")
+        for name, d, c, sc, loc in per_mesh:
+            print(f"[diag]   mesh '{name}': world_dims=({d[0]:.3f},{d[1]:.3f},{d[2]:.3f})m "
+                  f"world_center=({c[0]:.2f},{c[1]:.2f},{c[2]:.2f}) "
+                  f"scale=({sc[0]:.4f},{sc[1]:.4f},{sc[2]:.4f}) loc=({loc[0]:.2f},{loc[1]:.2f},{loc[2]:.2f})")
+        print(f"[diag] COMBINED world_dims=({comb_dims[0]:.3f},{comb_dims[1]:.3f},{comb_dims[2]:.3f})m "
+              f"max_dim={comb_dims.max():.3f}m center=({comb_center[0]:.2f},{comb_center[1]:.2f},{comb_center[2]:.2f})")
+        print(f"[diag] camera world_pos=({cam_world[0]:.1f},{cam_world[1]:.1f},{cam_world[2]:.1f}) "
+              f"target_center=({float(center[0]):.2f},{float(center[1]):.2f},{float(center[2]):.2f}) "
+              f"dist_3d={dist_3d:.1f}m (req distance_m={req.camera.distance_m})")
+        print(f"[diag] hfov={req.camera.hfov_deg}° focal_mm={req.camera.focal_mm:.1f} "
+              f"focal_px={focal_px:.1f} res={req.image_w}x{req.image_h}")
+        print(f"[diag] >>> EXPECTED vehicle ≈ {expected_px:.1f}px (max_dim/dist_3d*focal_px). "
+              f"{'OK' if expected_px >= 15 else 'TOO SMALL — root cause тут'}")
+        if abs(comb_dims.max() - 5.0) > 1.0:
+            print(f"[diag] !!! combined max_dim={comb_dims.max():.2f}m ≠ ~5m → SCALE NORMALIZATION FAILED")
+        if float(np.linalg.norm(np.array(comb_center) - np.array(center))) > 0.5:
+            print(f"[diag] !!! combined_center ≠ camera target center → CAMERA AIMED OFF-VEHICLE")
+        print("[diag] ===============================================")
+    except Exception as exc:
+        print(f"[diag] dump failed (non-fatal): {exc.__class__.__name__}: {exc}")
+
     sun_info = {
         "sun_zenith_rad": float(sun_zenith),
         "sun_azim_rad": float(sun_azim),

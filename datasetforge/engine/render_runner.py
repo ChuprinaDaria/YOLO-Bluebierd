@@ -219,6 +219,20 @@ def main(argv=None):
                         if veh_ids else np.zeros_like(segmap, dtype=np.uint8))
             cv2.imwrite(str(mask_dir / f"{stem}.png"), mask)
 
+            # [diag] Чи segmentation взагалі позначив vehicle? Розрізняє два корені:
+            #   mask EMPTY → segmentation pass не бачить техніку (category_id / sampling).
+            #   mask non-empty але tiny → min_side_px=10 фільтр дропає bbox (n_boxes=0).
+            _src = "category_id_segmaps" if cat_segmaps else "instance_fallback"
+            _ys, _xs = np.where(mask > 0)
+            if _xs.size:
+                print(f"[diag] frame {i}: mask nonzero={_xs.size}px via {_src} "
+                      f"bbox=({_xs.min()},{_ys.min()})-({_xs.max()},{_ys.max()}) "
+                      f"size=({_xs.max()-_xs.min()+1}x{_ys.max()-_ys.min()+1})px "
+                      f"n_boxes(after min_side={10})={len(boxes)}", file=sys.stderr)
+            else:
+                print(f"[diag] frame {i}: mask EMPTY (0px) via {_src} — "
+                      f"segmentation НЕ позначив vehicle (не min_side фільтр)", file=sys.stderr)
+
             # Metadata sidecar
             _elev_rad = math.radians(max(cam_sample.view_angle_deg, 5.0))
             meta = {
