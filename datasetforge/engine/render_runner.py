@@ -110,8 +110,10 @@ def main(argv=None):
         "cy": float(img_h / 2.0),
     }
 
+    # AOV setup сплит: depth/normals — ONCE outside (enable_depth_output двічі кидає
+    # RuntimeError, commit 05a68db). segmentation — IN loop, інакше пасс індекс не
+    # ставиться на новий vehicle після reset_keyframes/clear scene (BlenderProc 2.8).
     bproc.renderer.set_max_amount_of_samples(64)
-    bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
     if args.depth_aov:
         bproc.renderer.enable_depth_output(activate_antialiasing=False)
     if args.normal_aov:
@@ -149,6 +151,17 @@ def main(argv=None):
         _, _, sun_info = build_scene(req)
         sun_cardinal = azimuth_to_cardinal(sun_info["sun_azimuth_deg"])
 
+        # Depth scale підбираємо ПІД дальність кадру. Фіксований ×1000 (мм) саттурив
+        # uint16 (65535 = 65.5м) на distance 1500-2500м → depth=65535 скрізь →
+        # cond.py percentile-norm падав (lo==hi) → depth-conditioning мертвий.
+        # 65535 / (distance·1.5) лишає техніку (~distance) і ближню землю у градієнті;
+        # далека земля/небо клипиться у 65535 (cond.py все одно ріже 1-99 перцентиль).
+        depth_scale = 65535.0 / max(cam_sample.distance_m * 1.5, 1.0)
+
+        # Per-frame segmentation re-enable — інакше mask=0 на нові frames
+        # (BlenderProc 2.8 reset pass index при scene rebuild).
+        bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
+
         data = bproc.renderer.render()
 
         # Тимчасова COCO папка, потім конвертуємо у YOLO
@@ -181,11 +194,12 @@ def main(argv=None):
                 print(f"[warn] no image source for frame {i}; checked {tmp_coco}", file=sys.stderr)
             write_yolo_label(boxes, lbl_dir / f"{stem}.txt")
 
-            # AOV: depth → 16-bit PNG (depth_mm, scale 1000 з sidecar)
+            # AOV: depth → 16-bit PNG, per-frame depth_scale (sidecar). cond.py
+            # percentile-нормалізує → scale-invariant; головне не саттурити 65535.
             if args.depth_aov and "depth" in data and data["depth"]:
                 depth_arr = np.asarray(data["depth"][0], dtype=np.float32)
-                depth_mm = np.clip(depth_arr * 1000.0, 0, 65535).astype(np.uint16)
-                cv2.imwrite(str(depth_dir / f"{stem}.png"), depth_mm)
+                depth_u16 = np.clip(depth_arr * depth_scale, 0, 65535).astype(np.uint16)
+                cv2.imwrite(str(depth_dir / f"{stem}.png"), depth_u16)
 
             # AOV: normals → 16-bit 3ch PNG, encoded (n+1)/2 * 65535. cv2 round-trip
             # bit-preserves array; composite reads back via cv2.imread same ordering.
@@ -211,6 +225,20 @@ def main(argv=None):
                 mask = (np.isin(segmap, veh_ids).astype(np.uint8) * 255
                         if veh_ids else np.zeros_like(segmap, dtype=np.uint8))
             cv2.imwrite(str(mask_dir / f"{stem}.png"), mask)
+
+            # [diag] Чи segmentation взагалі позначив vehicle? Розрізняє два корені:
+            #   mask EMPTY → segmentation pass не бачить техніку (category_id / sampling).
+            #   mask non-empty але tiny → min_side_px=10 фільтр дропає bbox (n_boxes=0).
+            _src = "category_id_segmaps" if cat_segmaps else "instance_fallback"
+            _ys, _xs = np.where(mask > 0)
+            if _xs.size:
+                print(f"[diag] frame {i}: mask nonzero={_xs.size}px via {_src} "
+                      f"bbox=({_xs.min()},{_ys.min()})-({_xs.max()},{_ys.max()}) "
+                      f"size=({_xs.max()-_xs.min()+1}x{_ys.max()-_ys.min()+1})px "
+                      f"n_boxes(after min_side={10})={len(boxes)}", file=sys.stderr)
+            else:
+                print(f"[diag] frame {i}: mask EMPTY (0px) via {_src} — "
+                      f"segmentation НЕ позначив vehicle (не min_side фільтр)", file=sys.stderr)
 
             # Metadata sidecar
             _elev_rad = math.radians(max(cam_sample.view_angle_deg, 5.0))
@@ -242,7 +270,7 @@ def main(argv=None):
                 "sun_cardinal": sun_cardinal,
                 "camera_intrinsics": intrinsics,
                 "vehicle_category_ids": [cls_meta["id"]],
-                "depth_scale_mm_per_unit": 1000.0,
+                "depth_scale_mm_per_unit": float(depth_scale),
                 "diffusion": {"enabled": False},
             }
             (meta_dir / f"{stem}.json").write_text(

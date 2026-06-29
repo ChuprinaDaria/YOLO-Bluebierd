@@ -257,9 +257,19 @@ def build_scene(req: SceneRequest):
     # Special case: будуємо rotation напряму через Euler. Blender camera default
     # дивиться вниз (-Z) при rotation_euler=(0,0,0), top-of-frame = +Y.
     # Z-axis rotation = azimuth для variety орієнтації кадру.
-    NADIR_THRESHOLD_DEG = 85.0
+    #
+    # Threshold 89° (НЕ 85°): rotation_from_forward_vec дегенерує лише в межах ~1°
+    # від справжнього надіра. При 85° forward ще на 5° від вертикалі — look-at гілка
+    # коректно цілиться у vehicle. А straight-down гілка ігнорує center: камера
+    # зміщена на distance·cos(θ) (130 м при θ=85°,d=1500) і дивиться рівно вниз →
+    # vehicle (off-axis 130 м) випадає за межі 6°-FOV footprint (~78 м півширина) →
+    # порожній кадр. Тому straight-down лишаємо тільки для θ≥89°, де зміщення ≤22 м
+    # (у межах footprint), і додатково ставимо камеру СТРОГО над vehicle (xy=center),
+    # щоб надір гарантовано бачив техніку.
+    NADIR_THRESHOLD_DEG = 89.0
     if req.camera.view_angle_deg >= NADIR_THRESHOLD_DEG:
         from mathutils import Euler
+        cam_pose = np.array([float(center[0]), float(center[1]), altitude], dtype=float)
         rot_mat = Euler((0.0, 0.0, azimuth), 'XYZ').to_matrix()
         look_at_matrix = bproc.math.build_transformation_mat(cam_pose, rot_mat)
     else:
@@ -274,6 +284,62 @@ def build_scene(req: SceneRequest):
     cam = bpy.context.scene.camera.data
     cam.lens = req.camera.focal_mm
     cam.sensor_width = req.camera.sensor_width_mm
+    # КРИТИЧНО: Blender camera default clip_end = 1000 м. Camera→vehicle distance
+    # (= distance_m) і ground-patch у FOV-конусі лежать на distance_m..(distance_m+horizon)
+    # метрів. При distance_m=1500-2500 (iter5b small-vehicle 20-33px) ВСЕ за far-clip
+    # 1000 м → Cycles обрізає всю геометрію → порожній кадр: vehicle_masks=0, n_boxes=0,
+    # RGB=саме HDRI-небо, depth=65535 (no-hit background) скрізь. Розсуваємо far-plane
+    # за найдальшу геометрію (ground plane 5000-scale = 10км край + горизонт HDRI).
+    cam.clip_start = 0.1
+    cam.clip_end = max(50000.0, req.camera.distance_m * 5.0)
+
+    # ───────────────────────────────────────────────────────────────────────
+    # [diag] Ground-truth dump ПЕРЕД render(). Шукаємо чому vehicle виходить
+    # 1-3px замість ~21px (640px) / ~32px (1024px). Друкує реальні world-dims
+    # КОЖНОЇ меш-частини (ловить multi-mesh GLB де scale не застосувався до
+    # children / частини розкидані), фінальний combined bbox, позицію камери,
+    # target center, 3D-дистанцію і ОЧІКУВАНИЙ розмір техніки у пікселях.
+    # Якщо expected_px ≈ 21 але на RGB 3px → камера/intrinsics. Якщо combined
+    # max_dim ≠ ~5m або частини розкидані → scale normalization bug.
+    try:
+        focal_px = (req.image_w / 2.0) / math.tan(math.radians(req.camera.hfov_deg) / 2.0)
+        per_mesh = []
+        all_corners = []
+        for o in vehicle_meshes:
+            bb = np.array(o.get_bound_box(local_coords=False))
+            all_corners.append(bb)
+            d = bb.max(axis=0) - bb.min(axis=0)
+            c = (bb.max(axis=0) + bb.min(axis=0)) / 2
+            per_mesh.append((o.get_name() if hasattr(o, "get_name") else "?",
+                             d, c, np.array(o.get_scale()), np.array(o.get_location())))
+        comb = np.vstack(all_corners)
+        comb_dims = comb.max(axis=0) - comb.min(axis=0)
+        comb_center = (comb.max(axis=0) + comb.min(axis=0)) / 2
+        cam_world = np.array(cam_pose, dtype=float)
+        dist_3d = float(np.linalg.norm(cam_world - np.array(comb_center, dtype=float)))
+        expected_px = (float(comb_dims.max()) / dist_3d) * focal_px if dist_3d > 0 else -1
+        print("[diag] ===== scene ground-truth before render =====")
+        print(f"[diag] model={req.model_path.name}  n_meshes={len(vehicle_meshes)}")
+        for name, d, c, sc, loc in per_mesh:
+            print(f"[diag]   mesh '{name}': world_dims=({d[0]:.3f},{d[1]:.3f},{d[2]:.3f})m "
+                  f"world_center=({c[0]:.2f},{c[1]:.2f},{c[2]:.2f}) "
+                  f"scale=({sc[0]:.4f},{sc[1]:.4f},{sc[2]:.4f}) loc=({loc[0]:.2f},{loc[1]:.2f},{loc[2]:.2f})")
+        print(f"[diag] COMBINED world_dims=({comb_dims[0]:.3f},{comb_dims[1]:.3f},{comb_dims[2]:.3f})m "
+              f"max_dim={comb_dims.max():.3f}m center=({comb_center[0]:.2f},{comb_center[1]:.2f},{comb_center[2]:.2f})")
+        print(f"[diag] camera world_pos=({cam_world[0]:.1f},{cam_world[1]:.1f},{cam_world[2]:.1f}) "
+              f"target_center=({float(center[0]):.2f},{float(center[1]):.2f},{float(center[2]):.2f}) "
+              f"dist_3d={dist_3d:.1f}m (req distance_m={req.camera.distance_m})")
+        print(f"[diag] hfov={req.camera.hfov_deg}° focal_mm={req.camera.focal_mm:.1f} "
+              f"focal_px={focal_px:.1f} res={req.image_w}x{req.image_h}")
+        print(f"[diag] >>> EXPECTED vehicle ≈ {expected_px:.1f}px (max_dim/dist_3d*focal_px). "
+              f"{'OK' if expected_px >= 15 else 'TOO SMALL — root cause тут'}")
+        if abs(comb_dims.max() - 5.0) > 1.0:
+            print(f"[diag] !!! combined max_dim={comb_dims.max():.2f}m ≠ ~5m → SCALE NORMALIZATION FAILED")
+        if float(np.linalg.norm(np.array(comb_center) - np.array(center))) > 0.5:
+            print(f"[diag] !!! combined_center ≠ camera target center → CAMERA AIMED OFF-VEHICLE")
+        print("[diag] ===============================================")
+    except Exception as exc:
+        print(f"[diag] dump failed (non-fatal): {exc.__class__.__name__}: {exc}")
 
     sun_info = {
         "sun_zenith_rad": float(sun_zenith),
