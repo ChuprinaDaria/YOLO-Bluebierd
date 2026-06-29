@@ -257,9 +257,19 @@ def build_scene(req: SceneRequest):
     # Special case: будуємо rotation напряму через Euler. Blender camera default
     # дивиться вниз (-Z) при rotation_euler=(0,0,0), top-of-frame = +Y.
     # Z-axis rotation = azimuth для variety орієнтації кадру.
-    NADIR_THRESHOLD_DEG = 85.0
+    #
+    # Threshold 89° (НЕ 85°): rotation_from_forward_vec дегенерує лише в межах ~1°
+    # від справжнього надіра. При 85° forward ще на 5° від вертикалі — look-at гілка
+    # коректно цілиться у vehicle. А straight-down гілка ігнорує center: камера
+    # зміщена на distance·cos(θ) (130 м при θ=85°,d=1500) і дивиться рівно вниз →
+    # vehicle (off-axis 130 м) випадає за межі 6°-FOV footprint (~78 м півширина) →
+    # порожній кадр. Тому straight-down лишаємо тільки для θ≥89°, де зміщення ≤22 м
+    # (у межах footprint), і додатково ставимо камеру СТРОГО над vehicle (xy=center),
+    # щоб надір гарантовано бачив техніку.
+    NADIR_THRESHOLD_DEG = 89.0
     if req.camera.view_angle_deg >= NADIR_THRESHOLD_DEG:
         from mathutils import Euler
+        cam_pose = np.array([float(center[0]), float(center[1]), altitude], dtype=float)
         rot_mat = Euler((0.0, 0.0, azimuth), 'XYZ').to_matrix()
         look_at_matrix = bproc.math.build_transformation_mat(cam_pose, rot_mat)
     else:
@@ -274,6 +284,14 @@ def build_scene(req: SceneRequest):
     cam = bpy.context.scene.camera.data
     cam.lens = req.camera.focal_mm
     cam.sensor_width = req.camera.sensor_width_mm
+    # КРИТИЧНО: Blender camera default clip_end = 1000 м. Camera→vehicle distance
+    # (= distance_m) і ground-patch у FOV-конусі лежать на distance_m..(distance_m+horizon)
+    # метрів. При distance_m=1500-2500 (iter5b small-vehicle 20-33px) ВСЕ за far-clip
+    # 1000 м → Cycles обрізає всю геометрію → порожній кадр: vehicle_masks=0, n_boxes=0,
+    # RGB=саме HDRI-небо, depth=65535 (no-hit background) скрізь. Розсуваємо far-plane
+    # за найдальшу геометрію (ground plane 5000-scale = 10км край + горизонт HDRI).
+    cam.clip_start = 0.1
+    cam.clip_end = max(50000.0, req.camera.distance_m * 5.0)
 
     sun_info = {
         "sun_zenith_rad": float(sun_zenith),
