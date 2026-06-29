@@ -21,18 +21,20 @@ image_size_diffusion: [1024, 1024]   # v2_smoke (Blender+Flux), Flux native res
 
 camera:
   # distance_m — 3D line-of-sight камера→техніка.
-  # ВАЖЛИВО (tier per-class): light_vehicle ~4м. На distance>500м з hfov=15°
-  # це <17 px = шум. 700/1000м тут ВИРІЗАНО — це фізично безглузда комбінація
-  # для дрібних класів. Tank/AD/truck (8-12м) можуть тримати весь діапазон у власних
-  # configs. Див. labeling_guidelines.md / pixel_budget.md.
-  distance_m: [150, 200, 300, 400, 500]
+  # TELEPHOTO-FAR рецепт: light_vehicle ~5м при hfov=6° дає ~20-33px на 1500-2700м
+  # (resolvable, але дрібно як на реальному ISR-дроні). Це замінює старий
+  # hfov=15°/150-500м (виходило «занадто близько»). КРИТИЧНО: clip_end у
+  # scene_builder.py тепер розсунутий під ці дистанції — інакше Blender default
+  # far-clip 1000м обрізав би всю геометрію (порожні маски). Tank/AD/truck (8-12м)
+  # тримають той самий діапазон у власних configs. Див. pixel_budget.md.
+  distance_m: [1500, 1800, 2100, 2400, 2700]
   # view_angle — елевація над горизонтом.
   # 10-30° cruising oblique + 90° nadir для diversity ракурсів (НЕ для видимості).
   view_angle_deg: [10, 15, 20, 25, 30, 90]
-  # hfov 15° = drone ISR telephoto (Mavic 3 Enterprise zoom, ScanEagle).
-  # УВАГА: це освічене вгадування. Реальна камера дрона не специфікована —
-  # коли буде spec, перерахувати lens (zoom-gimbal ~10-15° vs wide ~50-70°).
-  hfov_deg: 15
+  # hfov 6° = drone ISR telephoto (zoom-gimbal). Вузький FOV + далека дистанція =
+  # дрібна техніка на реалістичному масштабі. Коли буде реальний spec камери —
+  # перерахувати lens.
+  hfov_deg: 6
   sensor:
     width: 1920
     height: 1080
@@ -45,9 +47,11 @@ scene:
   seasons: [summer, autumn_mud, winter, spring]
   weather: [clear, fog, haze, rain]
   time_of_day: [day, dusk]
-  # Підкладає вузьку ґрунтову колію під техніку у Blender (depth+RGB бачать дорогу,
-  # Flux її добудовує). True → для road-landscapes; field лишається без дороги.
-  road_under_vehicle: true
+  # Road strip ВИМКНЕНО: на aerial-масштабі примітив-смуга рендериться як стерильна
+  # світла/біла полоса під технікою (плоский матеріал без текстури) і ще й тече у
+  # depth/edge-conditioning → Qwen домальовує її як білу дорогу. Дорогу дає сам
+  # landscape (dirt_road ground texture) + промпт. False = чисто, без «білих ліній».
+  road_under_vehicle: false
 
 # DEPRECATED — НЕ читається жодним кодом. Камерна деградація тепер у блоці
 # `polish:` нижче (albumentations, Stage 5). Лишено для git-історії; не редагуй тут.
@@ -130,11 +134,11 @@ polish:
   enabled: true
   iso_noise:           {p: 0.7,  color_shift: [0.01, 0.05], intensity: [0.1, 0.5]}
   gauss_noise:         {p: 0.35, std_range: [0.02, 0.07]}   # частка від 255
-  motion_blur:         {p: 0.3,  blur_limit: [3, 7]}
-  defocus:             {p: 0.15, radius: [1, 3]}
+  motion_blur:         {p: 0.12, blur_limit: [3, 5]}      # було 0.3/[3,7] — техніка 20-33px не терпить розмиття
+  defocus:             false                               # ВИМКНЕНО: давав суцільний soft-focus blanket (фото-«шлак»)
   fog:                 {p: 0.25, fog_coef_range: [0.05, 0.25], alpha_coef: 0.08}
   brightness_contrast: {p: 0.5,  brightness: 0.12, contrast: 0.12}
   chromatic:           {p: 0.3,  primary: 0.02, secondary: 0.01}
-  downscale:           {p: 0.2,  scale_range: [0.6, 0.9]}
+  downscale:           {p: 0.1,  scale_range: [0.85, 0.97]}  # було 0.2/[0.6,0.9] — 0.6 робив кадр ушестеро м'якшим
   jpeg:                {p: 0.9,  quality: [60, 85]}         # головний «дрон/телефон» tell
   seed_offset: 9000

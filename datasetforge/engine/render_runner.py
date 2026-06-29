@@ -142,6 +142,13 @@ def main(argv=None):
         _, _, sun_info = build_scene(req)
         sun_cardinal = azimuth_to_cardinal(sun_info["sun_azimuth_deg"])
 
+        # Depth scale підбираємо ПІД дальність кадру. Фіксований ×1000 (мм) саттурив
+        # uint16 (65535 = 65.5м) на distance 1500-2500м → depth=65535 скрізь →
+        # cond.py percentile-norm падав (lo==hi) → depth-conditioning мертвий.
+        # 65535 / (distance·1.5) лишає техніку (~distance) і ближню землю у градієнті;
+        # далека земля/небо клипиться у 65535 (cond.py все одно ріже 1-99 перцентиль).
+        depth_scale = 65535.0 / max(cam_sample.distance_m * 1.5, 1.0)
+
         bproc.renderer.set_max_amount_of_samples(64)
         bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
         if args.depth_aov:
@@ -180,11 +187,12 @@ def main(argv=None):
                 print(f"[warn] no image source for frame {i}; checked {tmp_coco}", file=sys.stderr)
             write_yolo_label(boxes, lbl_dir / f"{stem}.txt")
 
-            # AOV: depth → 16-bit PNG (depth_mm, scale 1000 з sidecar)
+            # AOV: depth → 16-bit PNG, per-frame depth_scale (sidecar). cond.py
+            # percentile-нормалізує → scale-invariant; головне не саттурити 65535.
             if args.depth_aov and "depth" in data and data["depth"]:
                 depth_arr = np.asarray(data["depth"][0], dtype=np.float32)
-                depth_mm = np.clip(depth_arr * 1000.0, 0, 65535).astype(np.uint16)
-                cv2.imwrite(str(depth_dir / f"{stem}.png"), depth_mm)
+                depth_u16 = np.clip(depth_arr * depth_scale, 0, 65535).astype(np.uint16)
+                cv2.imwrite(str(depth_dir / f"{stem}.png"), depth_u16)
 
             # AOV: normals → 16-bit 3ch PNG, encoded (n+1)/2 * 65535. cv2 round-trip
             # bit-preserves array; composite reads back via cv2.imread same ordering.
@@ -241,7 +249,7 @@ def main(argv=None):
                 "sun_cardinal": sun_cardinal,
                 "camera_intrinsics": intrinsics,
                 "vehicle_category_ids": [cls_meta["id"]],
-                "depth_scale_mm_per_unit": 1000.0,
+                "depth_scale_mm_per_unit": float(depth_scale),
                 "diffusion": {"enabled": False},
             }
             (meta_dir / f"{stem}.json").write_text(
