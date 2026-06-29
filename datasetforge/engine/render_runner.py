@@ -145,6 +145,7 @@ def main(argv=None):
             image_h=img_h,
             seed=seed,
             road_under_vehicle=bool(scene_cfg.get("road_under_vehicle", False)),
+            target_max_dim_m=float(cls_meta.get("max_dim_m", 5.0)),
         )
 
         bproc.utility.reset_keyframes()
@@ -160,7 +161,12 @@ def main(argv=None):
 
         # Per-frame segmentation re-enable — інакше mask=0 на нові frames
         # (BlenderProc 2.8 reset pass index при scene rebuild).
-        bproc.renderer.enable_segmentation_output(map_by=["category_id", "instance"])
+        # default_values: sky/HDRI/no-hit pixels отримують cat_id=254 (sentinel),
+        # інакше default=0 конфліктує з tank class.id=0 → mask захоплює sky.
+        bproc.renderer.enable_segmentation_output(
+            map_by=["category_id", "instance"],
+            default_values={"category_id": 254},
+        )
 
         data = bproc.renderer.render()
 
@@ -174,10 +180,14 @@ def main(argv=None):
             colors=data["colors"],
             color_file_format="JPEG",
             jpg_quality=85,
-            label_mapping=bproc.utility.LabelIdMapping.from_dict({cls_meta["name"]: cls_meta["id"]}),
+            label_mapping=bproc.utility.LabelIdMapping.from_dict({cls_meta["name"]: cls_meta["id"] + 100, "background": 255, "sky": 0}),
         )
 
-        for img_filename, boxes in coco_to_yolo(
+        # COCO writer лишається для image export, але YOLO bbox обчислюємо
+        # напряму з vehicle mask. Інакше для multi-class (де class.id=0 як tank і
+        # ground sentinel=255) COCO пише annotation для найбільшої instance (ground)
+        # → labels містять class=255 bbox=весь кадр замість vehicle.
+        for img_filename, _ in coco_to_yolo(
             tmp_coco / "coco_annotations.json",
             image_w=img_w, image_h=img_h, min_side_px=10,
         ):
@@ -192,7 +202,6 @@ def main(argv=None):
                 shutil.move(str(src_img), dst_img)
             else:
                 print(f"[warn] no image source for frame {i}; checked {tmp_coco}", file=sys.stderr)
-            write_yolo_label(boxes, lbl_dir / f"{stem}.txt")
 
             # AOV: depth → 16-bit PNG, per-frame depth_scale (sidecar). cond.py
             # percentile-нормалізує → scale-invariant; головне не саттурити 65535.
@@ -209,36 +218,44 @@ def main(argv=None):
                                       0, 65535).astype(np.uint16)
                 cv2.imwrite(str(normal_dir / f"{stem}.png"), normals_u16)
 
-            # Vehicle alpha mask: pick pixels where category_id == our class.
-            # map_by=["category_id", "instance"] дає category_id_segmaps окремий.
+            # Vehicle alpha mask: cat_arr == class.id + 100 offset (avoid sky/ground
+            # collision when class.id=0). scene_builder.py tags vehicle з offset.
+            RENDER_CAT_ID_OFFSET = 100
             cat_segmaps = data.get("category_id_segmaps")
             if cat_segmaps:
                 cat_arr = np.asarray(cat_segmaps[0])
-                mask = (cat_arr == int(cls_meta["id"])).astype(np.uint8) * 255
+                mask = (cat_arr == int(cls_meta["id"]) + RENDER_CAT_ID_OFFSET).astype(np.uint8) * 255
             else:
-                # Fallback: filter instance_segmaps via attribute map.
+                # Fallback: instance-based (теж використовує render-offset cat_id).
                 segmap = np.asarray(data["instance_segmaps"][0])
                 inst_attrs = data["instance_attribute_maps"][0]
-                veh_ids = [a.get("idx") for a in inst_attrs
-                           if int(a.get("category_id", -1)) == int(cls_meta["id"])]
-                veh_ids = [v for v in veh_ids if v is not None]
+                veh_ids = [int(a["idx"]) for a in inst_attrs
+                           if int(a.get("category_id", -1)) == int(cls_meta["id"]) + RENDER_CAT_ID_OFFSET
+                           and a.get("idx") is not None]
                 mask = (np.isin(segmap, veh_ids).astype(np.uint8) * 255
                         if veh_ids else np.zeros_like(segmap, dtype=np.uint8))
             cv2.imwrite(str(mask_dir / f"{stem}.png"), mask)
 
-            # [diag] Чи segmentation взагалі позначив vehicle? Розрізняє два корені:
-            #   mask EMPTY → segmentation pass не бачить техніку (category_id / sampling).
-            #   mask non-empty але tiny → min_side_px=10 фільтр дропає bbox (n_boxes=0).
-            _src = "category_id_segmaps" if cat_segmaps else "instance_fallback"
+            # YOLO bbox напряму з vehicle mask (не COCO writer — там labels=ground).
+            from datasetforge.engine.bbox_extractor import YoloBox, coco_xywh_to_yolo
             _ys, _xs = np.where(mask > 0)
+            _src = "category_id_segmaps" if cat_segmaps else "instance_fallback"
+            boxes = []
             if _xs.size:
+                _x0, _y0 = int(_xs.min()), int(_ys.min())
+                _w_px = int(_xs.max()) - _x0 + 1
+                _h_px = int(_ys.max()) - _y0 + 1
+                if min(_w_px, _h_px) >= 10:
+                    _xc, _yc, _wn, _hn = coco_xywh_to_yolo((_x0, _y0, _w_px, _h_px), img_w, img_h)
+                    boxes.append(YoloBox(cls=int(cls_meta["id"]), xc=_xc, yc=_yc, w=_wn, h=_hn))
                 print(f"[diag] frame {i}: mask nonzero={_xs.size}px via {_src} "
-                      f"bbox=({_xs.min()},{_ys.min()})-({_xs.max()},{_ys.max()}) "
-                      f"size=({_xs.max()-_xs.min()+1}x{_ys.max()-_ys.min()+1})px "
-                      f"n_boxes(after min_side={10})={len(boxes)}", file=sys.stderr)
+                      f"bbox=({_x0},{_y0})-({_x0+_w_px-1},{_y0+_h_px-1}) "
+                      f"size=({_w_px}x{_h_px})px n_boxes(after min_side=10)={len(boxes)}",
+                      file=sys.stderr)
             else:
                 print(f"[diag] frame {i}: mask EMPTY (0px) via {_src} — "
                       f"segmentation НЕ позначив vehicle (не min_side фільтр)", file=sys.stderr)
+            write_yolo_label(boxes, lbl_dir / f"{stem}.txt")
 
             # Metadata sidecar
             _elev_rad = math.radians(max(cam_sample.view_angle_deg, 5.0))

@@ -43,6 +43,9 @@ class SceneRequest:
     # Підкласти ґрунтову колію під техніку (для road-landscapes). Дає depth+RGB
     # реальну дорогу, яку Flux добудовує — фікс «техніка посеред поля».
     road_under_vehicle: bool = False
+    # Per-class normalize target: light_vehicle ~5м, tank ~9.5м, truck ~8м, etc.
+    # GLB-файли часто мають non-meters units → normalize до реалістичного class size.
+    target_max_dim_m: float = 5.0
 
 
 def build_scene(req: SceneRequest):
@@ -131,13 +134,17 @@ def build_scene(req: SceneRequest):
     vehicle_meshes = [o for o in objs if isinstance(o, bproc.types.MeshObject)]
     if not vehicle_meshes:
         raise RuntimeError(f"no MESH objects in {req.model_path}")
+    # Render category_id = class.id + 100 (sentinel offset). class.id=0 (tank) інакше
+    # колізує з sky HDRI default cat_id=0 → mask захоплює sky. YOLO labels залишаються
+    # cls=class.id (без offset) — це тільки внутрішній render-only tag.
+    RENDER_CAT_ID_OFFSET = 100
     for o in vehicle_meshes:
-        o.set_cp("category_id", req.class_id)
+        o.set_cp("category_id", req.class_id + RENDER_CAT_ID_OFFSET)
 
     # Normalize vehicle scale: max-dim → ~5 м.
     # Захист від GLB-файлів з non-meters units (cm/dm/mm), що тягне камеру
     # всередину моделі і дає "50-100 см рендер" замість 200-1000 м.
-    TARGET_MAX_DIM_M = 5.0
+    TARGET_MAX_DIM_M = req.target_max_dim_m
     combined_bbox = np.vstack([np.array(o.get_bound_box(local_coords=False))
                                for o in vehicle_meshes])
     dims = combined_bbox.max(axis=0) - combined_bbox.min(axis=0)
@@ -191,7 +198,9 @@ def build_scene(req: SceneRequest):
     # 2. Ground plane 10km×10km щоб горизонт не вилазив (drone з 800м бачить ~15км до горизонту).
     ground = bproc.object.create_primitive("PLANE", scale=[5000, 5000, 1])
     ground.set_location([float(center[0]), float(center[1]), 0])
-    ground.set_cp("category_id", 0)  # 0 = background, інакше segmentation падає
+    # Background sentinel 255 (НЕ 0). Tank class.id=0 → колізія з background → mask
+    # cat_arr==0 включає ground → bbox = весь кадр. 255 поза range всіх 10 класів.
+    ground.set_cp("category_id", 255)
     # Apply seasonal ground texture (PBR диффузка з Poly Haven)
     if req.ground_texture_path.exists():
         gmat = bproc.material.create_material_from_texture(
@@ -213,7 +222,7 @@ def build_scene(req: SceneRequest):
             # Трохи над ground (z=0) щоб не було z-fighting; на aerial масштабі непомітно.
             road.set_location([float(center[0]), float(center[1]), 0.03])
             road.set_rotation_euler([0.0, 0.0, z_rot])  # вздовж heading техніки
-            road.set_cp("category_id", 0)               # background, не ламає segmentation
+            road.set_cp("category_id", 255)             # background sentinel (НЕ 0 — колізія з tank class.id=0)
             road_mat = bproc.material.create("dirt_road")
             # Темно-коричнева утоптана земля, матова — контраст до трав'яного ground.
             road_mat.set_principled_shader_value("Base Color", [0.21, 0.16, 0.11, 1.0])

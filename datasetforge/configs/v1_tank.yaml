@@ -1,0 +1,100 @@
+# Phase 1 smoke — tank (cls 0).
+# Базується на v1_light_vehicle.yaml. Tank = Tier 1 техніка ~9.5м (T-72/80/90).
+
+version: df-v1.0.0-dev
+seed: 42
+
+class:
+  name: tank
+  id: 0
+  # Per-class normalize: tank ~9.5м (T-72=9.5, T-80=9.7, T-90=9.5). GLB-моделі без
+  # уніт-конвертації нормалізуються до цього розміру.
+  max_dim_m: 9.5
+  models:
+    - russian_t-72b3.glb
+    - t-80_mbt.glb
+    - t-90am.glb
+
+count: 20
+image_size: [640, 640]
+image_size_diffusion: [1024, 1024]
+
+camera:
+  # Tank ~9.5м, drone wide-FOV recipe (hfov=30° Mavic-class consumer drone).
+  # 3 зони по distance — кожна вчить своєму:
+  #  - Ближня 100-200м: tank 56-113px → class differentiation (силует, деталі)
+  #  - Середня 300-500м: tank 23-38px → робоча зона detection
+  #  - Далека 600-1000м: tank 11-19px → крапка для далеких цілей
+  # На 800-1000м клас не зчитується (10px не несе силуету), але модель вчиться
+  # «є/нема» на крапці. Для inference: imgsz=1280 + SAHI tiling + P2 head.
+  # Reference: docs taxonomy_v3 "висота 300-800м" + reality drone @ 1000м = крапка.
+  distance_m: [100, 150, 200, 300, 400, 500, 600, 700, 800, 1000]
+  view_angle_deg: [10, 15, 20, 25, 30, 90]
+  hfov_deg: 30
+  sensor:
+    width: 1920
+    height: 1080
+    modality: EO
+
+scene:
+  landscapes: [dirt_road, field, forest_belt, field]
+  seasons: [summer, autumn_mud, winter, spring]
+  weather: [clear, fog, haze, rain]
+  time_of_day: [day, dusk]
+  road_under_vehicle: false
+
+degradation:
+  jpeg_quality: [60, 95]
+  motion_blur_px: [0, 8]
+  atmosphere_strength: [0.0, 0.4]
+
+hard_negatives:
+  ratio: 0.15
+  types:
+    - empty_landscape
+
+output:
+  format: yolo
+  split:
+    train: 0.7
+    valid: 0.2
+    test: 0.1
+  metadata_sidecar: true
+
+diffusion:
+  enabled: false
+  base_model: black-forest-labs/FLUX.1-Depth-dev
+  pipeline: FluxControlInpaintPipeline
+  inference_size: [1024, 1024]
+  steps: 30
+  guidance: 3.5
+  true_cfg_scale: 1.0
+  lora:
+    enabled: false
+    repo: XLabs-AI/flux-RealismLora
+    weight_name: lora.safetensors
+    adapter_name: realism
+    scale: 0.8
+  strength: 0.88
+  mask_dilate_px: 4
+  mask_feather_px: 2
+  prompt_template: "aerial drone reconnaissance photo of a {landscape} in {season}, {weather}, {sun_cardinal} sunlight at {sun_elevation_deg:.0f} degrees elevation, shot from {altitude_m:.0f} meters altitude at {view_angle_deg:.0f} degrees oblique top-down angle"
+  negative_prompt: "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, text, watermark, ui, 3d render, cgi, render, video game, unreal engine, octane, blender, plastic, glossy, waxy, airbrushed, cinematic, dramatic lighting, golden hour, lens flare, bokeh, depth of field, hdr, oversaturated, vivid, overprocessed, masterpiece, artstation, oversharpened, illustration, painting, blurry, low quality"
+  seed_offset: 1000
+  relight:
+    enabled: true
+    strength: 0.55
+    match_color: true
+
+polish:
+  enabled: true
+  iso_noise:           {p: 0.7,  color_shift: [0.01, 0.05], intensity: [0.1, 0.5]}
+  gauss_noise:         {p: 0.35, std_range: [0.02, 0.07]}
+  motion_blur:         {p: 0.12, blur_limit: [3, 5]}
+  defocus:             false
+  fog:                 {p: 0.25, fog_coef_range: [0.05, 0.25], alpha_coef: 0.08}
+  brightness_contrast: {p: 0.5,  brightness: 0.12, contrast: 0.12}
+  chromatic:           {p: 0.3,  primary: 0.02, secondary: 0.01}
+  downscale:           {p: 0.1,  scale_range: [0.85, 0.97]}
+  jpeg:                {p: 0.9,  quality: [60, 85]}
+  seed_offset: 9000
