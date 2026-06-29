@@ -45,3 +45,28 @@ def sample_random(
 ) -> list[CameraSample]:
     rng = random.Random(seed)
     return [rng.choice(grid) for _ in range(n)]
+
+
+def sample_stratified(
+    grid: list[CameraSample],
+    n: int,
+    seed: int = 0,
+) -> list[CameraSample]:
+    """Stratified pick: гарантує coverage по distance bins.
+
+    `random.choice(grid)` з малим n може degenerate (всі picks у одному
+    distance bucket — seed=42 + 5 picks дало all-distance=300). Stratified:
+    розкладає n рівномірно по unique distances, у кожному bucket рандомно
+    тягне (distance, angle) комбінацію.
+    """
+    rng = random.Random(seed)
+    buckets: dict[float, list[CameraSample]] = {}
+    for s in grid:
+        buckets.setdefault(s.distance_m, []).append(s)
+    distances = sorted(buckets.keys())
+    samples: list[CameraSample] = []
+    for i in range(n):
+        d = distances[i % len(distances)]
+        samples.append(rng.choice(buckets[d]))
+    rng.shuffle(samples)
+    return samples

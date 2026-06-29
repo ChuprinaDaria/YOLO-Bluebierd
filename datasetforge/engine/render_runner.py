@@ -41,7 +41,7 @@ def main(argv=None):
     # bproc вже імпортований на верху файла (BlenderProc requirement).
     from datasetforge.engine.scene_builder import CameraSpec, SceneRequest, build_scene
     from datasetforge.engine.bbox_extractor import coco_to_yolo, write_yolo_label
-    from datasetforge.engine.camera_sampler import build_grid, sample_round_robin
+    from datasetforge.engine.camera_sampler import build_grid, sample_stratified
     from datasetforge.engine.season_lighting import pick_season_assets
     from datasetforge.pipelines.inpaint.prompts import azimuth_to_cardinal
 
@@ -74,7 +74,7 @@ def main(argv=None):
         print(f"[gpu] GPU setup error (продовжуємо CPU): {e}")
 
     grid = build_grid(cam_cfg["distance_m"], cam_cfg["view_angle_deg"])
-    samples = sample_round_robin(grid, args.n)
+    samples = sample_stratified(grid, args.n, seed=args.seed)
 
     out_dir = args.out
     img_dir = out_dir / "images"

@@ -120,7 +120,7 @@ def edit_one(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.save(out_path)
 
-    return {
+    sidecar = {
         "base_model": diffusion_cfg["base_model"],
         "pipeline": diffusion_cfg.get("pipeline", "QwenImageEditPlusPipeline"),
         "inference_size": [inf_h, inf_w],
@@ -133,3 +133,26 @@ def edit_one(
         "prompt": positive,
         "mode": "instruct",
     }
+
+    # Перезаписати metadata sidecar: render_runner Stage 1 ставить
+    # diffusion.enabled=False (бо не знає чи буде Qwen). Тут чесно фіксуємо
+    # actual параметри, щоб JSON відповідав реальному кадру.
+    metadata_updated = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata_updated["diffusion"] = {"enabled": True, **sidecar}
+    # relight + composite params з diffusion_cfg якщо є
+    relight_cfg = diffusion_cfg.get("relight") or {}
+    if relight_cfg:
+        metadata_updated["diffusion"]["relight"] = {
+            "enabled": bool(relight_cfg.get("enabled", False)),
+            "strength": float(relight_cfg.get("strength", 0.0)),
+            "match_color": bool(relight_cfg.get("match_color", False)),
+        }
+    for k in ("strength", "mask_dilate_px", "mask_feather_px"):
+        if k in diffusion_cfg:
+            metadata_updated["diffusion"][k] = diffusion_cfg[k]
+    meta_path.write_text(
+        json.dumps(metadata_updated, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    return sidecar
