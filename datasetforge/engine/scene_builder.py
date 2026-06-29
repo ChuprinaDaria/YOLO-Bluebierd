@@ -14,6 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Per-process model template cache: path → list of mesh templates (parked at
+# z=-10000 + tagged _df_template=1). build_scene клонує з cache замість reimport.
+_DF_MODEL_TEMPLATES: dict = {}
+
+
 @dataclass
 class CameraSpec:
     distance_m: float        # 3D line-of-sight camera → vehicle (200-1000 m)
@@ -72,60 +77,80 @@ def build_scene(req: SceneRequest):
     # bproc.utility.reset_keyframes() у render_runner чистить ТІЛЬКИ анімаційні keyframes,
     # mesh+light об'єкти з попереднього кадру лишаються у сцені і накопичуються.
     # Без цього cleanup після 3-х кадрів у сцені 3 машини = "зліплені 3 моделі" артефакт.
+    # Templates (vehicle mesh prototypes parked at z=-10000) скіпаємо — їх клонуємо.
     for obj in list(bpy.data.objects):
-        if obj.type in ("MESH", "LIGHT"):
+        if obj.type in ("MESH", "LIGHT") and not obj.get("_df_template", False):
             bpy.data.objects.remove(obj, do_unlink=True)
-    # Orphan data cleanup щоб memory не роздувалась за 20+ frames (texture/mesh blocks).
-    for collection in (bpy.data.meshes, bpy.data.materials,
-                       bpy.data.images, bpy.data.lights):
+    # Orphan data cleanup щоб memory не роздувалась за 20+ frames.
+    # Images НЕ чистимо — HDRI/textures кешуємо для повторного use (1000 frames I/O).
+    for collection in (bpy.data.meshes, bpy.data.materials, bpy.data.lights):
         for item in list(collection):
             if not item.users:
                 collection.remove(item)
 
-    # 1. Завантажити vehicle (dispatch за extension)
+    # 1. Завантажити vehicle. Template-instance pattern для glTF/glb/fbx:
+    # перший виклик — повний import + park at z=-10000 + tag _df_template=1.
+    # Подальші виклики — клон через obj.copy() + linked mesh data (no reimport,
+    # no mesh duplicate). Save ~10s/frame на 1000 frames = ~2.8 год.
     ext = req.model_path.suffix.lower()
     if ext == ".blend":
         objs = bproc.loader.load_blend(str(req.model_path))
     elif ext in (".glb", ".gltf", ".fbx"):
-        before = set(bpy.data.objects.keys())
-        if ext in (".glb", ".gltf"):
-            bpy.ops.import_scene.gltf(filepath=str(req.model_path))
-        else:
-            bpy.ops.import_scene.fbx(filepath=str(req.model_path))
-        new_names = list(set(bpy.data.objects.keys()) - before)
-        new_objs = [bpy.data.objects[n] for n in new_names]
+        key = str(req.model_path)
+        templates = _DF_MODEL_TEMPLATES.get(key)
+        if templates is None:
+            # First-time import + bake transforms.
+            before = set(bpy.data.objects.keys())
+            if ext in (".glb", ".gltf"):
+                bpy.ops.import_scene.gltf(filepath=str(req.model_path))
+            else:
+                bpy.ops.import_scene.fbx(filepath=str(req.model_path))
+            new_names = list(set(bpy.data.objects.keys()) - before)
+            new_objs = [bpy.data.objects[n] for n in new_names]
 
-        # glTF спека = Y-up; Blender = Z-up. Importer ставить корекційну ротацію
-        # (Euler(π/2,0,0)) на ROOT EMPTY, mesh children мають identity local rotation.
-        # Якщо ми потім robimо set_rotation_euler([0,0,z]) на mesh — z-axis у parent
-        # frame ≠ world Z → vehicle качається догори ногами / на бік.
-        # Fix: parent_clear (KEEP_TRANSFORM) + transform_apply бейкає parent matrix
-        # у mesh data, після цього local == world rotation.
-        bpy.ops.object.select_all(action='DESELECT')
-        for obj in new_objs:
-            obj.select_set(True)
-        if new_objs:
-            bpy.context.view_layer.objects.active = new_objs[0]
-            bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
-            # Select лише mesh-and: transform_apply не любить EMPTY.
+            # glTF Y-up → Z-up: bake parent transform у mesh data (sesja 2 gotcha).
             bpy.ops.object.select_all(action='DESELECT')
-            meshes_to_apply = [o for o in new_objs if o.type == "MESH"]
-            for obj in meshes_to_apply:
+            for obj in new_objs:
                 obj.select_set(True)
-            if meshes_to_apply:
-                bpy.context.view_layer.objects.active = meshes_to_apply[0]
-                bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-        bpy.ops.object.select_all(action='DESELECT')
+            if new_objs:
+                bpy.context.view_layer.objects.active = new_objs[0]
+                bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
+                bpy.ops.object.select_all(action='DESELECT')
+                meshes_to_apply = [o for o in new_objs if o.type == "MESH"]
+                for obj in meshes_to_apply:
+                    obj.select_set(True)
+                if meshes_to_apply:
+                    bpy.context.view_layer.objects.active = meshes_to_apply[0]
+                    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+            bpy.ops.object.select_all(action='DESELECT')
 
-        # Прибрати глТФ root emptys — після parent_clear вони сироти і тільки шумлять
-        # у segmentation map (хоча type=EMPTY → renderable=False, але data.images кеш росте).
-        for n in list(new_names):
-            obj = bpy.data.objects.get(n)
-            if obj and obj.type == "EMPTY":
-                bpy.data.objects.remove(obj, do_unlink=True)
+            for n in list(new_names):
+                obj = bpy.data.objects.get(n)
+                if obj and obj.type == "EMPTY":
+                    bpy.data.objects.remove(obj, do_unlink=True)
 
-        objs = [bproc.types.MeshObject(bpy.data.objects[n]) for n in new_names
-                if bpy.data.objects.get(n) and bpy.data.objects[n].type == "MESH"]
+            templates = [bpy.data.objects[n] for n in new_names
+                         if bpy.data.objects.get(n) and bpy.data.objects[n].type == "MESH"]
+            # Park templates at z=-10000 + tag (survives next-frame cleanup).
+            for t in templates:
+                t["_df_template"] = 1
+                t.location = (0.0, 0.0, -10000.0)
+                t.hide_render = True
+                t.hide_viewport = True
+            _DF_MODEL_TEMPLATES[key] = templates
+
+        # Clone з template — linked mesh data (no duplicate), fast.
+        objs = []
+        for tmpl in templates:
+            clone = tmpl.copy()
+            clone.data = tmpl.data  # link mesh data
+            clone["_df_template"] = 0
+            clone.hide_render = False
+            clone.hide_viewport = False
+            clone.location = (0.0, 0.0, 0.0)
+            bpy.context.collection.objects.link(clone)
+            objs.append(bproc.types.MeshObject(clone))
+        bpy.context.view_layer.update()
     elif ext == ".obj":
         objs = bproc.loader.load_obj(str(req.model_path))
     else:
