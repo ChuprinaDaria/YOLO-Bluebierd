@@ -16,9 +16,9 @@ from pathlib import Path
 
 @dataclass
 class CameraSpec:
-    distance_m: float        # 3D line-of-sight camera → vehicle (200-1000 m)
-    view_angle_deg: float    # елевація над горизонтом (10-30° drone cruising)
-    hfov_deg: float
+    distance_m: float        # 3D line-of-sight camera → vehicle (= altitude/sin(elev))
+    view_angle_deg: float    # елевація над горизонтом (90 = надір)
+    hfov_deg: float          # реальна камера дрона: 92° або 112°
     sensor_width_mm: float = 35.0
 
     @property
@@ -30,7 +30,7 @@ class CameraSpec:
 class SceneRequest:
     class_name: str
     class_id: int
-    model_path: Path
+    model_path: Path | None
     hdri_path: Path
     ground_texture_path: Path
     camera: CameraSpec
@@ -43,41 +43,22 @@ class SceneRequest:
     # Підкласти ґрунтову колію під техніку (для road-landscapes). Дає depth+RGB
     # реальну дорогу, яку Flux добудовує — фікс «техніка посеред поля».
     road_under_vehicle: bool = False
+    # Реальна довжина техніки у метрах (нормалізація max-dim моделі). Per-class
+    # з YAML `class.target_size_m`: Tigr ~5.7, БТР ~7.7, танк ~9.5 (зі стволом).
+    target_size_m: float = 5.0
+    # Hard negative: сцена БЕЗ техніки (empty_landscape). model_path ігнорується,
+    # камера цілиться у точку на землі — чесний порожній кадр для anti-FP.
+    hard_negative: bool = False
 
 
-def build_scene(req: SceneRequest):
-    """Будує одну сцену під рендер. Повертає (camera_pose_4x4, vehicle_mesh_objs, sun_info).
+def _load_and_place_vehicle(req: SceneRequest, rng):
+    """Кроки 1-2: load model, tag, normalize scale, random yaw, lift на землю.
 
-    sun_info — dict {sun_zenith_rad, sun_azim_rad, sun_elevation_deg, sun_azimuth_deg}.
-    Споживає render_runner для metadata sidecar (downstream diffusion prompt
-    "low south-west sun at 35 degrees elevation").
-
-    Кроки:
-      1. Завантажити vehicle (.blend / .glb / .gltf / .obj / .fbx).
-      2. Tag category_id + normalize scale до 5м max-dim + random Z rotation.
-      3. Ground plane 10×10км з seasonal PBR-текстурою.
-      4. HDRI world background (strength=2.0) + explicit SUN light (energy=5).
-      5. Camera pose: distance_m + view_angle_deg → H=d·sin(θ), xy=d·cos(θ).
-      6. Camera intrinsics (focal_mm з hfov_deg, sensor_width).
+    Повертає (vehicle_meshes, center_xyz, z_rot).
     """
-    # Lazy import: bproc + bpy доступні тільки коли запущено через `blenderproc run`.
     import bpy
     import blenderproc as bproc
     import numpy as np
-
-    # 0. CLEANUP previous frame.
-    # bproc.utility.reset_keyframes() у render_runner чистить ТІЛЬКИ анімаційні keyframes,
-    # mesh+light об'єкти з попереднього кадру лишаються у сцені і накопичуються.
-    # Без цього cleanup після 3-х кадрів у сцені 3 машини = "зліплені 3 моделі" артефакт.
-    for obj in list(bpy.data.objects):
-        if obj.type in ("MESH", "LIGHT"):
-            bpy.data.objects.remove(obj, do_unlink=True)
-    # Orphan data cleanup щоб memory не роздувалась за 20+ frames (texture/mesh blocks).
-    for collection in (bpy.data.meshes, bpy.data.materials,
-                       bpy.data.images, bpy.data.lights):
-        for item in list(collection):
-            if not item.users:
-                collection.remove(item)
 
     # 1. Завантажити vehicle (dispatch за extension)
     ext = req.model_path.suffix.lower()
@@ -134,16 +115,17 @@ def build_scene(req: SceneRequest):
     for o in vehicle_meshes:
         o.set_cp("category_id", req.class_id)
 
-    # Normalize vehicle scale: max-dim → ~5 м.
-    # Захист від GLB-файлів з non-meters units (cm/dm/mm), що тягне камеру
-    # всередину моделі і дає "50-100 см рендер" замість 200-1000 м.
-    TARGET_MAX_DIM_M = 5.0
+    # Normalize vehicle scale: max-dim → target_size_m (per-class з YAML,
+    # НЕ хардкод: Tigr 5.7 м ≠ БТР 7.7 м ≠ танк 9.5 м — інакше міжкласові
+    # пропорції і GSD-реалізм зламані). Заодно захист від GLB-файлів з
+    # non-meters units (cm/dm/mm), що тягне камеру всередину моделі.
+    target_max_dim_m = float(req.target_size_m)
     combined_bbox = np.vstack([np.array(o.get_bound_box(local_coords=False))
                                for o in vehicle_meshes])
     dims = combined_bbox.max(axis=0) - combined_bbox.min(axis=0)
     current_max = float(dims.max())
     if current_max > 0.01:
-        scale_factor = TARGET_MAX_DIM_M / current_max
+        scale_factor = target_max_dim_m / current_max
         if not (0.95 < scale_factor < 1.05):
             for o in vehicle_meshes:
                 cur_scale = o.get_scale()
@@ -152,11 +134,10 @@ def build_scene(req: SceneRequest):
                 o.set_location([cur_loc[i] * scale_factor for i in range(3)])
             bpy.context.view_layer.update()
             print(f"[scale] {req.model_path.name}: max_dim "
-                  f"{current_max:.2f}m → {TARGET_MAX_DIM_M}m (×{scale_factor:.3f})")
+                  f"{current_max:.2f}m → {target_max_dim_m}m (×{scale_factor:.3f})")
 
     # Random Z rotation для variety. Після parent_clear+transform_apply вище local rotation
     # вже дорівнює world rotation, тому це чистий yaw навколо world Z (vehicle стоїть прямо).
-    rng = np.random.default_rng(req.seed)
     z_rot = float(rng.uniform(0, 2 * math.pi))
     for o in vehicle_meshes:
         cur = o.get_rotation_euler()
@@ -187,6 +168,53 @@ def build_scene(req: SceneRequest):
     print(f"[orient] {req.model_path.name}: dims=({dims_final[0]:.2f},{dims_final[1]:.2f},{dims_final[2]:.2f}) m "
           f"center=({center[0]:.2f},{center[1]:.2f},{center[2]:.2f}) h/L={h_to_l:.2f} "
           f"{'OK' if h_to_l < 0.8 else 'LIKELY-ON-SIDE'}")
+    return vehicle_meshes, center, z_rot
+
+
+def build_scene(req: SceneRequest):
+    """Будує одну сцену під рендер. Повертає (camera_pose_4x4, vehicle_mesh_objs, sun_info).
+
+    sun_info — dict {sun_zenith_rad, sun_azim_rad, sun_elevation_deg, sun_azimuth_deg}.
+    Споживає render_runner для metadata sidecar (downstream diffusion prompt
+    "low south-west sun at 35 degrees elevation").
+
+    Кроки:
+      1. Завантажити vehicle (.blend / .glb / .gltf / .obj / .fbx) — SKIP для hard_negative.
+      2. Tag category_id + normalize scale до target_size_m max-dim + random Z rotation.
+      3. Ground plane 10×10км з seasonal PBR-текстурою.
+      4. HDRI world background (strength=2.0) + explicit SUN light (energy=5).
+      5. Camera pose: distance_m + view_angle_deg → H=d·sin(θ), xy=d·cos(θ).
+      6. Camera intrinsics (focal_mm з hfov_deg, sensor_width).
+    """
+    # Lazy import: bproc + bpy доступні тільки коли запущено через `blenderproc run`.
+    import bpy
+    import blenderproc as bproc
+    import numpy as np
+
+    # 0. CLEANUP previous frame.
+    # bproc.utility.reset_keyframes() у render_runner чистить ТІЛЬКИ анімаційні keyframes,
+    # mesh+light об'єкти з попереднього кадру лишаються у сцені і накопичуються.
+    # Без цього cleanup після 3-х кадрів у сцені 3 машини = "зліплені 3 моделі" артефакт.
+    for obj in list(bpy.data.objects):
+        if obj.type in ("MESH", "LIGHT"):
+            bpy.data.objects.remove(obj, do_unlink=True)
+    # Orphan data cleanup щоб memory не роздувалась за 20+ frames (texture/mesh blocks).
+    for collection in (bpy.data.meshes, bpy.data.materials,
+                       bpy.data.images, bpy.data.lights):
+        for item in list(collection):
+            if not item.users:
+                collection.remove(item)
+
+    rng = np.random.default_rng(req.seed)
+
+    # 1-2. Vehicle — або порожня сцена для hard negative (empty_landscape).
+    if req.hard_negative or req.model_path is None:
+        vehicle_meshes = []
+        center = np.zeros(3, dtype=float)
+        z_rot = float(rng.uniform(0, 2 * math.pi))
+        print("[hard-negative] empty_landscape — сцена без техніки")
+    else:
+        vehicle_meshes, center, z_rot = _load_and_place_vehicle(req, rng)
 
     # 2. Ground plane 10km×10km щоб горизонт не вилазив (drone з 800м бачить ~15км до горизонту).
     ground = bproc.object.create_primitive("PLANE", scale=[5000, 5000, 1])
@@ -204,7 +232,7 @@ def build_scene(req: SceneRequest):
     # depth+RGB реальну дорогу замість «техніка посеред поля». Guarded — будь-яка
     # помилка тут не валить рендер (road = nice-to-have, не критичний).
     ROAD_LANDSCAPES = ("dirt_road", "forest_belt")
-    if req.road_under_vehicle and req.landscape in ROAD_LANDSCAPES:
+    if req.road_under_vehicle and not req.hard_negative and req.landscape in ROAD_LANDSCAPES:
         try:
             road_len_m = 70.0
             road_wid_m = 5.0

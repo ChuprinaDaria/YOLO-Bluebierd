@@ -1,0 +1,52 @@
+# Рекомендовані тренувальні параметри для synthetic-датасету 1920×1080
+# з цілями 12-35px (реальна камера: 150-300 м, HFOV 92°/112°).
+#
+# ЧОМУ НЕ train-10_args.yaml (imgsz=640, yolo11n, degrees=45):
+#   - imgsz 640 стискає 1920-кадр у 3× → ціль 12px стає 4px → фізично
+#     невивчальна (див. docs/pixel_budget.md: min ~10px по меншій стороні).
+#   - yolo11n без P2-голови детектить з stride 8 мінімум → 12px ціль дає
+#     1.5 клітинки фічомапи. P2 (stride 4) обов'язковий для small-object.
+#   - degrees=45 на axis-aligned мікро-боксах роздуває bbox фоном до 40%+.
+#
+# ДВА РОБОЧІ ВАРІАНТИ (обрати один):
+#
+# A. SAHI-тайлінг (рекомендовано, зберігає нативний піксельний масштаб):
+#    1. Нарізати train-набір тайлами 640×640 з overlap 20%
+#       (sahi library: `sahi coco slice` або власний скрипт по YOLO labels).
+#    2. Тренувати на тайлах цим конфігом з imgsz: 640.
+#    3. Inference — ТІЛЬКИ через SAHI sliced prediction (640, overlap 0.2).
+#
+# B. Великий imgsz без тайлінгу (простіше, дорожче по VRAM):
+#    imgsz: 1280 (ціль 12px @1920 → 8px @1280 — на межі; краще 1536 якщо влазить).
+#
+# P2-модель: ultralytics приймає `model: yolov8n-p2.yaml` out-of-the-box
+# (P2-варіант для yolo11 — скопіювати yolo11.yaml і додати P2-голову аналогічно).
+# Ваги ініціалізуються з *.pt автоматично при `pretrained: true`.
+
+task: detect
+mode: train
+model: yolov8n-p2.yaml     # P2-голова (stride 4) — обов'язково для 6-15px цілей
+data: dataset/data.yaml
+epochs: 300
+patience: 100
+batch: 8                   # 1280px жере ~4× VRAM проти 640; за потреби batch 4 + nbs 64
+imgsz: 1280                # варіант B; для варіанту A (SAHI-тайли) → 640
+optimizer: AdamW
+seed: 0
+close_mosaic: 20
+
+# --- Аугментації, безпечні для мікро-об'єктів ---
+degrees: 10                # НЕ 45: великі ротації AABB мікро-боксів = label noise
+translate: 0.1
+scale: 0.2                 # НЕ 0.5: -50% робить 12px ціль 6px — під порогом
+shear: 2
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.5
+mosaic: 1.0                # для tiny objects mosaic корисний (більше цілей/батч)
+mixup: 0.05                # 0.2 замулює 6-12px цілі; лишаємо сліди
+copy_paste: 0.0
+erasing: 0.2               # 0.4 занадто часто стирає саму ціль
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4

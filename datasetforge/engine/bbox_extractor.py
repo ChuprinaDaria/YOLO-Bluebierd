@@ -45,18 +45,25 @@ def coco_to_yolo(
     coco_json_path: Path,
     image_w: int,
     image_h: int,
-    min_side_px: int = 10,
-) -> list[tuple[str, list[YoloBox]]]:
-    """Читає BlenderProc-written COCO JSON, повертає [(image_filename, [YoloBox, ...]), ...].
+    min_side_px: int = 6,
+) -> list[tuple[str, list[YoloBox], int]]:
+    """Читає BlenderProc-written COCO JSON.
 
-    Кадри з усіма bbox < min_side_px стають hard negative (порожній YOLO файл).
+    Повертає [(image_filename, [YoloBox, ...], n_dropped), ...].
+
+    n_dropped = кількість bbox, викинутих min-side фільтром. КРИТИЧНО: кадр,
+    де техніка видима, але всі bbox відфільтровані, — це НЕ hard negative,
+    а отруєний false-negative (модель вчиться ігнорувати техніку). Рішення
+    що робити з таким кадром (discard) приймає caller — render_runner.
     """
     data = json.loads(coco_json_path.read_text(encoding="utf-8"))
     img_by_id = {img["id"]: img for img in data["images"]}
     boxes_by_img: dict[int, list[YoloBox]] = {iid: [] for iid in img_by_id}
+    dropped_by_img: dict[int, int] = {iid: 0 for iid in img_by_id}
     for ann in data.get("annotations", []):
         x, y, w, h = ann["bbox"]
         if min(w, h) < min_side_px:
+            dropped_by_img[ann["image_id"]] += 1
             continue
         img = img_by_id[ann["image_id"]]
         xc, yc, nw, nh = coco_xywh_to_yolo((x, y, w, h), img["width"], img["height"])
@@ -68,7 +75,7 @@ def coco_to_yolo(
             )
         )
     return [
-        (img_by_id[iid]["file_name"], boxes)
+        (img_by_id[iid]["file_name"], boxes, dropped_by_img[iid])
         for iid, boxes in boxes_by_img.items()
     ]
 
@@ -83,7 +90,7 @@ def extract_from_3d_object(
     class_id: int,
     image_w: int,
     image_h: int,
-    min_side_px: int = 10,
+    min_side_px: int = 6,
 ) -> YoloBox | None:
     """3D bbox projection fallback коли BlenderProc COCO не використовується.
 
