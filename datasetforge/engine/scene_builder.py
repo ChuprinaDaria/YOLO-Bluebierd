@@ -49,6 +49,15 @@ class SceneRequest:
     # Hard negative: сцена БЕЗ техніки (empty_landscape). model_path ігнорується,
     # камера цілиться у точку на землі — чесний порожній кадр для anti-FP.
     hard_negative: bool = False
+    # Оклюжн: дерева/кущі/сітки між камерою і технікою (domain gap fix).
+    # n_occluders=0 → без оклюдерів (стара поведінка).
+    n_occluders: int = 0
+    occluder_kinds: tuple[str, ...] = ("tree", "bush")
+    # Destroyed: вигоріла/перевернута техніка. wreck_mode:
+    #   "off"   — ціла техніка;
+    #   "class" — wreck зі своїм category_id (детектимо як окремий клас);
+    #   "hn"    — wreck БЕЗ боксу (hard negative проти false-positive на брухті).
+    wreck_mode: str = "off"
 
 
 def _load_and_place_vehicle(req: SceneRequest, rng):
@@ -112,8 +121,11 @@ def _load_and_place_vehicle(req: SceneRequest, rng):
     vehicle_meshes = [o for o in objs if isinstance(o, bproc.types.MeshObject)]
     if not vehicle_meshes:
         raise RuntimeError(f"no MESH objects in {req.model_path}")
+    # wreck "hn" рендериться, але БЕЗ боксу → category_id 0 (background):
+    # брухт присутній у кадрі як anti-false-positive шум, але не мітиться.
+    cat_id = 0 if req.wreck_mode == "hn" else req.class_id
     for o in vehicle_meshes:
-        o.set_cp("category_id", req.class_id)
+        o.set_cp("category_id", cat_id)
 
     # Normalize vehicle scale: max-dim → target_size_m (per-class з YAML,
     # НЕ хардкод: Tigr 5.7 м ≠ БТР 7.7 м ≠ танк 9.5 м — інакше міжкласові
@@ -143,6 +155,31 @@ def _load_and_place_vehicle(req: SceneRequest, rng):
         cur = o.get_rotation_euler()
         o.set_rotation_euler([cur[0], cur[1], cur[2] + z_rot])
     bpy.context.view_layer.update()
+
+    # Destroyed/wreck: turret-toss + перекид + charred матеріал. Best-practice
+    # BDA-ознаки зверху (turret toss = зірвана башта, вигорілий корпус, missing
+    # tracks). GLB generic mesh → башту не сегментуємо, тому процедурно:
+    #   1. великий крен/тангаж (перекинута/на боці — розірваний силует);
+    #   2. темний обгорілий матеріал (Base Color ≈ 0.03, Roughness 1, Metallic 0).
+    # Це дає моделі «брухт ≠ ціль» без окремих 3D-моделей wreck'ів.
+    if req.wreck_mode in ("class", "hn"):
+        tilt_pitch = float(rng.uniform(math.radians(20), math.radians(80)))
+        tilt_roll = float(rng.uniform(math.radians(-70), math.radians(70)))
+        for o in vehicle_meshes:
+            cur = o.get_rotation_euler()
+            o.set_rotation_euler([cur[0] + tilt_pitch, cur[1] + tilt_roll, cur[2]])
+            try:
+                for mat in o.get_materials():
+                    mat.set_principled_shader_value("Base Color",
+                                                    [0.03, 0.03, 0.03, 1.0])
+                    mat.set_principled_shader_value("Roughness", 1.0)
+                    mat.set_principled_shader_value("Metallic", 0.0)
+            except Exception as exc:
+                print(f"[wreck] material char skip (non-fatal): "
+                      f"{exc.__class__.__name__}: {exc}")
+        bpy.context.view_layer.update()
+        print(f"[wreck] mode={req.wreck_mode} charred+toppled "
+              f"(pitch={math.degrees(tilt_pitch):.0f}° roll={math.degrees(tilt_roll):.0f}°)")
 
     # Lift vehicle щоб bbox bottom торкався ground plane (z=0).
     # Vehicle origin зазвичай у центрі моделі — без lift половина моделі тоне в землю.
@@ -321,10 +358,30 @@ def build_scene(req: SceneRequest):
     cam.clip_start = 0.1
     cam.clip_end = max(50000.0, req.camera.distance_m * 5.0)
 
+    # 7. Оклюдери (дерева/кущі/сітки) на лінії зору камера→техніка. Потребують
+    # cam_pose (щоб стати МІЖ камерою і ціллю) → будуємо тут, після кроку 5.
+    # Повертаємо окремо: render_runner ховає їх на amodal-проході (full silhouette)
+    # і показує на occluded-проході (visible silhouette) для visibility fraction.
+    occluder_objs = []
+    if req.n_occluders > 0 and not req.hard_negative and vehicle_meshes:
+        try:
+            from datasetforge.engine.occluders import build_occluders, plan_occluders
+            specs = plan_occluders(
+                (float(center[0]), float(center[1])),
+                (float(cam_pose[0]), float(cam_pose[1])),
+                rng,
+                n=int(req.n_occluders),
+                kinds=list(req.occluder_kinds),
+            )
+            occluder_objs = build_occluders(specs, req.season)
+        except Exception as exc:
+            print(f"[occluder] scatter skip (non-fatal): "
+                  f"{exc.__class__.__name__}: {exc}")
+
     sun_info = {
         "sun_zenith_rad": float(sun_zenith),
         "sun_azim_rad": float(sun_azim),
         "sun_elevation_deg": float(math.degrees(math.pi / 2 - sun_zenith)),
         "sun_azimuth_deg": float(math.degrees(sun_azim) % 360.0),
     }
-    return look_at_matrix, vehicle_meshes, sun_info
+    return look_at_matrix, vehicle_meshes, sun_info, occluder_objs

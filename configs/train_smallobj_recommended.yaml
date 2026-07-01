@@ -23,6 +23,10 @@
 # (P2-варіант для yolo11 — скопіювати yolo11.yaml і додати P2-голову аналогічно).
 # Ваги ініціалізуються з *.pt автоматично при `pretrained: true`.
 
+# OBB: якщо генеруєш з output.bbox_format: obb (рекомендовано для танк/БТР —
+# орієнтація корпусу/ствола розрізняє класи на дрібному масштабі), тоді:
+#   task: obb  +  model: yolo11n-obb.pt  +  labels у форматі cls x1 y1 x2 y2 x3 y3 x4 y4.
+# Нижче — конфіг для звичайного axis-aligned detect (bbox_format: aabb).
 task: detect
 mode: train
 model: yolov8n-p2.yaml     # P2-голова (stride 4) — обов'язково для 6-15px цілей

@@ -72,11 +72,37 @@ output:
   # imgsz≥1280, інакше resize до 640 знову зробить з цілей крапки
   # (див. configs/train_smallobj_recommended.yaml).
   min_side_px: 6
+  # aabb (axis-aligned) | obb (oriented). OBB щільніше обгортає oblique-техніку і
+  # кодує орієнтацію (ствол vs корпус) — сильніше для розрізнення танк/БТР.
+  # Тренувати з yolo11*-obb і obb-loss. bbox рахується з amodal-силуету у обох.
+  bbox_format: aabb
   split:
     train: 0.7
     valid: 0.2
     test: 0.1
   metadata_sidecar: true
+
+# Оклюжн: дерева/кущі/маскувальні сітки МІЖ камерою і технікою. Реальна техніка
+# стоїть у посадках/під кронами/під сітками — стара сцена (голе поле + заморожена
+# Flux-маска) НІКОЛИ не давала перекриття → domain gap. Two-pass рендер рахує
+# РЕАЛЬНУ видимість із сегментації; bbox лишається amodal (повний силует).
+occlusion:
+  enabled: true
+  ratio: 0.5              # ~половина кадрів з оклюдерами
+  n_range: [1, 4]        # скільки оклюдерів на кадр
+  kinds: [tree, bush, net]
+  # <25% видимо → кадр discard (стандартна конвенція visibility threshold).
+  # ≥25% лишаємо і мітимо за amodal-межами (модель вчиться на частковому оклюжні).
+  min_visible_frac: 0.25
+
+# Destroyed/wreck: вигоріла/перевернута техніка. Для light_vehicle вимкнено
+# (актуальніше для tank/ifv_apc). mode: hn = без боксу (anti-false-positive на
+# брухті), class = окремий детектований клас (потрібен class_id).
+destroyed:
+  enabled: false
+  ratio: 0.0
+  mode: hn
+  class_id: null
 
 # Stage 3+4 — Flux depth-conditioned background inpaint. Default OFF —
 # Blender-only path (Phase 1) не торкаємо. v2_smoke notebook вмикає вручну.

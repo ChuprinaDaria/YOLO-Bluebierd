@@ -26,6 +26,86 @@ class YoloBox:
         return f"{self.cls} {self.xc:.6f} {self.yc:.6f} {self.w:.6f} {self.h:.6f}"
 
 
+@dataclass
+class YoloObb:
+    """Oriented bbox — YOLO OBB формат: cls x1 y1 x2 y2 x3 y3 x4 y4 (norm 0-1).
+
+    Для oblique-ракурсу і витягнутої техніки axis-aligned bbox тягне багато фону
+    (ствол/корпус під кутом). OBB щільно обгортає силует → кращий IoU і
+    орієнтація (ствол vs корпус) помічніша для розрізнення танк/БТР.
+    """
+    cls: int
+    corners: tuple[tuple[float, float], float, tuple[float, float], float,
+                   tuple[float, float], float, tuple[float, float], float]
+
+    def to_line(self) -> str:
+        pts = " ".join(f"{v:.6f}" for xy in self.corners for v in xy)
+        return f"{self.cls} {pts}"
+
+
+def mask_to_yolo_box(
+    mask: "object",  # np.ndarray HxW, >0 = target
+    class_id: int,
+    min_side_px: int = 6,
+) -> YoloBox | None:
+    """Axis-aligned bbox з бінарної маски (amodal, коли маска = повний силует).
+
+    Повертає None якщо маска порожня або min-side < порога. Numpy lazy-imported
+    щоб pure-Python частина модуля лишалась importable без numpy.
+    """
+    import numpy as np
+
+    m = np.asarray(mask)
+    ys, xs = np.nonzero(m)
+    if xs.size == 0:
+        return None
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    w_px, h_px = (x1 - x0 + 1), (y1 - y0 + 1)
+    if min(w_px, h_px) < min_side_px:
+        return None
+    H, W = m.shape[:2]
+    return YoloBox(
+        cls=class_id,
+        xc=(x0 + w_px / 2.0) / W,
+        yc=(y0 + h_px / 2.0) / H,
+        w=w_px / W,
+        h=h_px / H,
+    )
+
+
+def mask_to_yolo_obb(
+    mask: "object",  # np.ndarray HxW, >0 = target
+    class_id: int,
+    min_side_px: int = 6,
+) -> YoloObb | None:
+    """Oriented bbox з бінарної маски через cv2.minAreaRect (min-area rectangle).
+
+    Повертає None якщо маска порожня / min-side < порога. Кути нормовані 0-1,
+    порядок — як повертає cv2.boxPoints (за годинниковою від низу).
+    """
+    import cv2
+    import numpy as np
+
+    m = (np.asarray(mask) > 0).astype(np.uint8)
+    ys, xs = np.nonzero(m)
+    if xs.size == 0:
+        return None
+    pts = np.column_stack([xs, ys]).astype(np.float32)
+    (_, _), (rw, rh), _ = cv2.minAreaRect(pts)
+    if min(rw, rh) < min_side_px:
+        return None
+    box = cv2.boxPoints(cv2.minAreaRect(pts))  # 4×2
+    H, W = m.shape[:2]
+    corners = tuple((float(x) / W, float(y) / H) for x, y in box)
+    return YoloObb(cls=class_id, corners=corners)
+
+
+def write_yolo_obb(boxes: list[YoloObb], path: Path) -> None:
+    path.write_text("\n".join(b.to_line() for b in boxes) + ("\n" if boxes else ""),
+                    encoding="utf-8")
+
+
 def coco_xywh_to_yolo(
     coco_box: tuple[float, float, float, float],
     image_w: int,

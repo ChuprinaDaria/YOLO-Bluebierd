@@ -50,11 +50,32 @@ hard_negatives:
 output:
   format: yolo
   min_side_px: 6      # у пікселях рендера (1920-wide); тренувати з SAHI/imgsz≥1280
+  # OBB рекомендовано для важкої техніки: на дрібному масштабі орієнтація корпусу/
+  # ствола — головна ознака танк vs БТР. Перемкни на obb + тренуй yolo11*-obb.
+  bbox_format: aabb
   split:
     train: 0.7
     valid: 0.2
     test: 0.1
   metadata_sidecar: true
+
+# Оклюжн: дерева/кущі/сітки між камерою і технікою (domain gap fix). Two-pass
+# рендер рахує реальну видимість; bbox amodal. <25% видимо → discard.
+occlusion:
+  enabled: true
+  ratio: 0.5
+  n_range: [1, 4]
+  kinds: [tree, bush, net]
+  min_visible_frac: 0.25
+
+# Destroyed/wreck: вигоріла/перевернута ББМ. mode hn (без боксу, anti-FP на
+# брухті) — за таксономією v3 спалена техніка = hard negative для цього класу.
+# Для окремого класу destroyed_vehicle: mode=class + class_id.
+destroyed:
+  enabled: true
+  ratio: 0.15
+  mode: hn
+  class_id: null
 
 # Камерна деградація — Stage 5 polish (albumentations), як у v1_light_vehicle.yaml.
 polish:
