@@ -51,7 +51,10 @@ _DEFAULT_CAMERA_CUE = (
 )
 
 _DEFAULT_NEGATIVE = (
-    "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, "
+    "tank, military vehicle, armored vehicle, APC, IFV, MBT, T-72, T-80, T-90, "
+    "vehicle on road, multiple vehicles, second vehicle, duplicate vehicle, "
+    "twin vehicle, mirrored vehicle, extra vehicle, ghost vehicle, "
+    "person, soldier, vehicle, truck, car, motorcycle, building, road sign, "
     "text, watermark, ui, 3d render, cgi, render, video game, unreal engine, octane, "
     "blender, plastic, glossy, waxy, airbrushed, cinematic, dramatic lighting, "
     "golden hour, lens flare, bokeh, depth of field, hdr, oversaturated, vivid, "
@@ -109,11 +112,14 @@ def build_prompt(metadata: dict, diffusion_cfg: dict,
     scene = _scene_description(metadata, diffusion_cfg)
 
     if mode == "instruct":
+        # Vehicle area вже erased у load_model.edit_one (cv2.inpaint) — Qwen бачить
+        # clean landscape. Lead тепер веде з "empty terrain", щоб модель не намалювала
+        # vehicle з prompt context ("drone reconnaissance" може імплікувати targets).
         lead = diffusion_cfg.get(
             "instruct_lead",
-            "Keep the military vehicle in the center exactly as it is — do not change "
-            "its shape, color, position or size. Replace only the surrounding background "
-            "and the ground it stands on with: ",
+            "Generate a clean top-down aerial drone photo of an empty rural landscape. "
+            "No vehicles, no military equipment, no people, no traffic. Just terrain. "
+            "Scene: ",
         )
         positive = lead.strip().rstrip(":") + ": " + scene
     else:

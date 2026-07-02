@@ -61,3 +61,45 @@ def build_inpaint_mask(mask_path: Path, target_hw: tuple[int, int],
     # Invert: inpaint expects 255=inpaint, 0=keep.
     inpaint_mask = 255 - veh_mask
     return Image.fromarray(inpaint_mask)
+
+
+def erase_vehicle_from_rgb(rgb_pil: Image.Image, mask_path: Path,
+                            target_hw: tuple[int, int],
+                            dilate_px: int = 12, radius: int = 8,
+                            method: str = "TELEA") -> tuple[Image.Image, dict]:
+    """Локально вирізати vehicle область з RGB (cv2.inpaint) — pre-Qwen erase.
+
+    Без цього Qwen-Image-Edit (pure edit pipeline) бачить tank у input і клонує
+    його у фон → "ghost tank" поза bbox. Заповнюємо vehicle область сусіднім
+    контекстом → Qwen бачить чистий landscape → не може намалювати ще один tank.
+
+    Dilate перед inpaint щоб ні залишити edge-hint про tank силует.
+
+    Returns:
+        (erased_rgb_pil, stats_dict_for_sidecar)
+    """
+    mask_raw = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if mask_raw is None:
+        raise FileNotFoundError(f"mask not loaded: {mask_path}")
+    h, w = target_hw
+    mask_resized = cv2.resize(mask_raw, (w, h), interpolation=cv2.INTER_NEAREST)
+    veh = (mask_resized >= 128).astype(np.uint8) * 255
+    if dilate_px > 0:
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1)
+        )
+        veh = cv2.dilate(veh, kernel, iterations=1)
+    rgb_arr = np.array(rgb_pil)
+    if rgb_arr.shape[:2] != (h, w):
+        rgb_arr = cv2.resize(rgb_arr, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    flag = cv2.INPAINT_TELEA if method.upper() == "TELEA" else cv2.INPAINT_NS
+    erased_bgr = cv2.inpaint(cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR), veh, radius, flag)
+    erased_rgb = cv2.cvtColor(erased_bgr, cv2.COLOR_BGR2RGB)
+    stats = {
+        "enabled": True,
+        "dilate_px": int(dilate_px),
+        "radius": int(radius),
+        "method": method.upper(),
+        "mask_px": int((mask_resized >= 128).sum()),
+    }
+    return Image.fromarray(erased_rgb), stats
