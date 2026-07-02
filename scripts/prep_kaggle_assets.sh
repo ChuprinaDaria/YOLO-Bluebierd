@@ -42,6 +42,16 @@ else
   echo "    [warn] $SRC_ASSETS/models відсутній"
 fi
 
+echo "==> copy props/vegetation/ (tree occluder templates)"
+if [ -d "$SRC_ASSETS/props/vegetation" ]; then
+  mkdir -p "$BUNDLE/props"
+  cp -r "$SRC_ASSETS/props/vegetation" "$BUNDLE/props/"
+  n=$(find "$BUNDLE/props/vegetation" -maxdepth 1 -name '*.glb' | wc -l)
+  echo "    included $n vegetation .glb (low_poly_forest_tree_pack.glb + variants)"
+else
+  echo "    [warn] $SRC_ASSETS/props/vegetation відсутній — tree occluders fallback до primitive"
+fi
+
 echo "==> розмір бандла:"
 du -sh "$BUNDLE"
 

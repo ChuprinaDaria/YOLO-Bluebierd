@@ -91,8 +91,76 @@ def plan_occluders(
     return specs
 
 
-def build_occluders(specs: list[OccluderSpec], season: str):
+# Module-level cache: templates імпортуються ОДИН РАЗ, всі occluder-instance —
+# linked copy (obj.copy() + shared mesh data). BlenderProc reset_keyframes зберігає
+# hidden templates (z=-10000), тому cache живий upon весь run.
+_TREE_TEMPLATES: list | None = None
+_TREE_PACK_TRIED: bool = False
+
+
+def _load_tree_templates(assets_root):
+    """Імпорт `props/vegetation/low_poly_forest_tree_pack.glb` як hidden templates.
+
+    Sesja 3 pattern: pack містить компоненти (Tree_Trunk_*, Tree_Branches_*,
+    Background_Tree_Atlas_*). Беремо лише Background_Tree_Atlas — це повне дерево
+    як crossed-planes billboard, цілісне. Окремі Tree_Trunk/Branches дадуть обрубки.
+
+    Returns list of hidden template Blender objects (parked at z=-10000).
+    Empty list if pack не знайдено (fallback до primitive у _build_tree).
+    """
+    global _TREE_TEMPLATES, _TREE_PACK_TRIED
+    if _TREE_TEMPLATES is not None:
+        return _TREE_TEMPLATES
+    if _TREE_PACK_TRIED:
+        return []  # уже пробували, немає
+    _TREE_PACK_TRIED = True
+
+    from pathlib import Path
+    import bpy
+
+    pack_path = Path(assets_root) / "props" / "vegetation" / "low_poly_forest_tree_pack.glb"
+    if not pack_path.exists():
+        print(f"[occluder] tree pack не знайдено: {pack_path} — fallback до primitive cone")
+        _TREE_TEMPLATES = []
+        return []
+
+    before = set(bpy.data.objects.keys())
+    bpy.ops.import_scene.gltf(filepath=str(pack_path))
+    new_names = list(set(bpy.data.objects.keys()) - before)
+
+    keep = []
+    for n in new_names:
+        obj = bpy.data.objects.get(n)
+        if obj is None:
+            continue
+        if obj.type != "MESH" or not obj.name.startswith("Background_Tree_Atlas"):
+            # Обрубки Trunk/Branches окремо / EMPTY roots / Rocks — прибираємо.
+            bpy.data.objects.remove(obj, do_unlink=True)
+            continue
+        # Normalize до 8м (типовий дуб/тополя UA).
+        min_c = [min(v[i] for v in [obj.matrix_world @ vv.co for vv in obj.data.vertices]) for i in range(3)]
+        max_c = [max(v[i] for v in [obj.matrix_world @ vv.co for vv in obj.data.vertices]) for i in range(3)]
+        h = max_c[2] - min_c[2]
+        if h < 0.1:
+            bpy.data.objects.remove(obj, do_unlink=True)
+            continue
+        s = 8.0 / h
+        obj.scale = (s, s, s)
+        obj.location = (0.0, 0.0, -10000.0)  # park hidden під землею
+        obj["_df_tree_template"] = 1
+        obj.hide_render = True  # templates НЕ рендеряться
+        keep.append(obj)
+
+    print(f"[occluder] tree templates loaded: {len(keep)} Background_Tree_Atlas variants")
+    _TREE_TEMPLATES = keep
+    return keep
+
+
+def build_occluders(specs: list[OccluderSpec], season: str, assets_root=None):
     """Побудувати 3D-примітиви оклюдерів у сцені. Lazy bproc/bpy.
+
+    tree kind — asset-based (real .glb billboard tree з low_poly_forest_tree_pack).
+    bush/net — procedural (SPHERE / PLANE).
 
     Повертає список bproc MeshObject (щоб render_runner міг hide/unhide для
     two-pass visibility). Усі — category_id 0 (background).
@@ -109,11 +177,16 @@ def build_occluders(specs: list[OccluderSpec], season: str):
     trunk = [0.20, 0.14, 0.09, 1.0]
     net_col = [0.24, 0.26, 0.20, 1.0]
 
+    tree_templates = _load_tree_templates(assets_root) if assets_root else []
+
     objs = []
     for i, s in enumerate(specs):
         try:
             if s.kind == "tree":
-                objs += _build_tree(bproc, s, foliage, trunk, i)
+                if tree_templates:
+                    objs += _build_tree_from_template(bproc, s, tree_templates, i)
+                else:
+                    objs += _build_tree(bproc, s, foliage, trunk, i)
             elif s.kind == "net":
                 objs.append(_build_net(bproc, s, net_col, i))
             else:
@@ -124,6 +197,31 @@ def build_occluders(specs: list[OccluderSpec], season: str):
     print(f"[occluder] built {len(objs)} meshes from {len(specs)} specs "
           f"(kinds={[s.kind for s in specs]})")
     return objs
+
+
+def _build_tree_from_template(bproc, s: OccluderSpec, templates, idx):
+    """Linked-copy tree template до позиції spec. Memory-efficient.
+
+    obj.copy() з обмінянним mesh data (obj.data = src.data) — instance,
+    геометрія shared. Тільки transform унікальний.
+    """
+    import bpy
+    import random
+
+    src = random.choice(templates)
+    obj = src.copy()
+    obj.data = src.data  # LINKED mesh — не новий datablock
+    # Scale = ratio до template 8м → бажана height_m
+    scale = float(s.height_m) / 8.0
+    obj.scale = (scale, scale, scale)
+    obj.location = (float(s.x), float(s.y), 0.0)
+    obj.rotation_euler = (0.0, 0.0, float(s.z_rot_rad))
+    obj.hide_render = False  # instance рендериться (template — ні)
+    bpy.context.scene.collection.objects.link(obj)
+    # Wrap у bproc MeshObject щоб render_runner міг hide_render toggle
+    mo = bproc.types.MeshObject(obj)
+    mo.set_cp("category_id", OCCLUDER_CATEGORY_ID)
+    return [mo]
 
 
 def _mat(bproc, name, color, rough=0.9):

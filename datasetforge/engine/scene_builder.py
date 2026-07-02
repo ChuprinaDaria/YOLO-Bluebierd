@@ -53,6 +53,10 @@ class SceneRequest:
     # n_occluders=0 → без оклюдерів (стара поведінка).
     n_occluders: int = 0
     occluder_kinds: tuple[str, ...] = ("tree", "bush")
+    # Assets root — потрібен щоб occluder tree завантажив
+    # `props/vegetation/low_poly_forest_tree_pack.glb` як templates. Якщо None
+    # або файл відсутній — fallback до primitive cone.
+    assets_root: Path | None = None
     # Destroyed: вигоріла/перевернута техніка. wreck_mode:
     #   "off"   — ціла техніка;
     #   "class" — wreck зі своїм category_id (детектимо як окремий клас);
@@ -373,7 +377,7 @@ def build_scene(req: SceneRequest):
                 n=int(req.n_occluders),
                 kinds=list(req.occluder_kinds),
             )
-            occluder_objs = build_occluders(specs, req.season)
+            occluder_objs = build_occluders(specs, req.season, req.assets_root)
         except Exception as exc:
             print(f"[occluder] scatter skip (non-fatal): "
                   f"{exc.__class__.__name__}: {exc}")

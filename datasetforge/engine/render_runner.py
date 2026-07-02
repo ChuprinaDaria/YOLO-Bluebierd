@@ -250,6 +250,7 @@ def main(argv=None):
             n_occluders=n_occ,
             occluder_kinds=effective_kinds,
             wreck_mode=wreck_mode,
+            assets_root=args.assets_root,
         )
 
         bproc.utility.reset_keyframes()
