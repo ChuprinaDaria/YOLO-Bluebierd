@@ -5,5 +5,7 @@
 """
 
 from datasetforge.pipelines.shared.composite import (  # noqa: F401
+    _luma,
+    _sun_vec_from_meta,
     composite_one,
 )

@@ -1,23 +1,34 @@
 # Reference config — replicate synthetic_apc_726 style
 # Single-class APC base, для перевірки що pipeline працює аналогічно до референсного output.
+#
+# МІГРОВАНО на робочу схему камери (altitude × view_angle × hfov):
+# стара версія (altitude_m + hfov 70, image_size 640) не читалась render_runner
+# і давала GSD у 3× гірший за реальний сенсор. Параметри камери — реальний дрон:
+# робоча висота 150-200 м, крейсерська ~300 м, HFOV 92°/112°.
 
+version: df-v1.0.0-dev
 seed: 42
 
 class:
   name: ifv_apc
   id: 1
+  # БТР-80 довжина 7.65 м — нормалізація max-dim моделі (per-class, не хардкод).
+  target_size_m: 7.7
   models:
     - apc_btr80
     - apc_btr82
     - apc_mt_lb
 
 count: 700  # ~726 у референсі
-image_size: [640, 640]
+image_size: [1920, 1080]              # нативна роздільність сенсора
+image_size_diffusion: [1920, 1080]
 
 camera:
-  altitude_m: [300, 400, 600, 800]
-  view_angle_deg: [10, 20, 30, 45, 60]
-  hfov_deg: 70
+  altitude_m: [150, 200, 300]
+  view_angle_deg: [30, 45, 60, 90]
+  # Два апаратні варіанти камери. Нежиттєздатні комбінації (ціль < min_side_px)
+  # відсікає preflight-фільтр camera_sampler.filter_viable з логом.
+  hfov_deg: [92, 112]
   sensor:
     width: 1920
     height: 1080
@@ -29,22 +40,53 @@ scene:
   weather: [clear, fog, haze, rain]
   time_of_day: [day, dusk]
 
-degradation:
-  jpeg_quality: [60, 95]
-  motion_blur_px: [0, 8]
-  atmosphere_strength: [0.0, 0.4]
-
+# Hard negatives: реалізовано лише empty_landscape (рендер без техніки).
+# destroyed_apc / civilian_truck_isolated потребують окремих 3D-моделей — TODO.
 hard_negatives:
   ratio: 0.15
   types:
     - empty_landscape
-    - destroyed_apc
-    - civilian_truck_isolated
 
 output:
   format: yolo
+  min_side_px: 6      # у пікселях рендера (1920-wide); тренувати з SAHI/imgsz≥1280
+  # OBB рекомендовано для важкої техніки: на дрібному масштабі орієнтація корпусу/
+  # ствола — головна ознака танк vs БТР. Перемкни на obb + тренуй yolo11*-obb.
+  bbox_format: aabb
   split:
     train: 0.7
     valid: 0.2
     test: 0.1
   metadata_sidecar: true
+
+# Оклюжн: дерева/кущі/сітки між камерою і технікою (domain gap fix). Two-pass
+# рендер рахує реальну видимість; bbox amodal. <25% видимо → discard.
+occlusion:
+  enabled: true
+  ratio: 0.5
+  n_range: [1, 4]
+  kinds: [tree, bush, net]
+  min_visible_frac: 0.25
+
+# Destroyed/wreck: вигоріла/перевернута ББМ. mode hn (без боксу, anti-FP на
+# брухті) — за таксономією v3 спалена техніка = hard negative для цього класу.
+# Для окремого класу destroyed_vehicle: mode=class + class_id.
+destroyed:
+  enabled: true
+  ratio: 0.15
+  mode: hn
+  class_id: null
+
+# Камерна деградація — Stage 5 polish (albumentations), як у v1_light_vehicle.yaml.
+polish:
+  enabled: true
+  iso_noise:           {p: 0.7,  color_shift: [0.01, 0.04], intensity: [0.05, 0.3]}
+  gauss_noise:         {p: 0.3,  std_range: [0.01, 0.04]}
+  motion_blur:         {p: 0.12, blur_limit: [3, 5]}
+  defocus:             false
+  fog:                 {p: 0.25, fog_coef_range: [0.05, 0.2], alpha_coef: 0.08}
+  brightness_contrast: {p: 0.5,  brightness: 0.12, contrast: 0.12}
+  chromatic:           {p: 0.3,  primary: 0.02, secondary: 0.01}
+  downscale:           {p: 0.1,  scale_range: [0.9, 0.97]}
+  jpeg:                {p: 0.9,  quality: [75, 90]}
+  seed_offset: 9000

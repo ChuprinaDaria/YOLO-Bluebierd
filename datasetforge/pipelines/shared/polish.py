@@ -24,17 +24,20 @@ from PIL import Image
 
 
 # Дефолти на випадок голого `polish: {enabled: true}`. Кожен блок вмикається лише
-# якщо присутній у cfg (або тут) і має p>0. Значення — стартові для drone-look.
+# якщо присутній у cfg (або тут) і має p>0. Каліброване під фактичний масштаб
+# цілей 12-35px @1920 (реальна камера 92°/112°, 150-300 м): агресивні jpeg q60 /
+# iso 0.5 / downscale 0.6 стирали структуру 6-14px min-side цілі повністю.
 _DEFAULTS: dict[str, Any] = {
-    "iso_noise": {"p": 0.7, "color_shift": [0.01, 0.05], "intensity": [0.1, 0.5]},
-    "gauss_noise": {"p": 0.35, "std_range": [0.02, 0.07]},  # частка від 255
-    "motion_blur": {"p": 0.3, "blur_limit": [3, 7]},
-    "defocus": {"p": 0.15, "radius": [1, 3]},
-    "fog": {"p": 0.25, "fog_coef_range": [0.05, 0.25], "alpha_coef": 0.08},
+    "iso_noise": {"p": 0.7, "color_shift": [0.01, 0.04], "intensity": [0.05, 0.3]},
+    "gauss_noise": {"p": 0.3, "std_range": [0.01, 0.04]},  # частка від 255
+    "motion_blur": {"p": 0.12, "blur_limit": [3, 5]},
+    "defocus": {"p": 0.0, "radius": [1, 3]},  # OFF: суцільний soft-focus blanket
+    "fog": {"p": 0.25, "fog_coef_range": [0.05, 0.2], "alpha_coef": 0.08},
     "brightness_contrast": {"p": 0.5, "brightness": 0.12, "contrast": 0.12},
     "chromatic": {"p": 0.3, "primary": 0.02, "secondary": 0.01},
-    "downscale": {"p": 0.2, "scale_range": [0.6, 0.9]},
-    "jpeg": {"p": 0.9, "quality": [60, 85]},  # майже завжди — головний «дрон/телефон» tell
+    "downscale": {"p": 0.1, "scale_range": [0.9, 0.97]},
+    "jpeg": {"p": 0.9, "quality": [75, 90]},  # майже завжди — головний «дрон» tell;
+                                              # ЄДИНА компресія (рендер тепер q95)
 }
 
 

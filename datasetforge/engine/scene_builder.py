@@ -16,9 +16,9 @@ from pathlib import Path
 
 @dataclass
 class CameraSpec:
-    distance_m: float        # 3D line-of-sight camera → vehicle (200-1000 m)
-    view_angle_deg: float    # елевація над горизонтом (10-30° drone cruising)
-    hfov_deg: float
+    distance_m: float        # 3D line-of-sight camera → vehicle (= altitude/sin(elev))
+    view_angle_deg: float    # елевація над горизонтом (90 = надір)
+    hfov_deg: float          # реальна камера дрона: 92° або 112°
     sensor_width_mm: float = 35.0
 
     @property
@@ -30,7 +30,7 @@ class CameraSpec:
 class SceneRequest:
     class_name: str
     class_id: int
-    model_path: Path
+    model_path: Path | None
     hdri_path: Path
     ground_texture_path: Path
     camera: CameraSpec
@@ -43,41 +43,31 @@ class SceneRequest:
     # Підкласти ґрунтову колію під техніку (для road-landscapes). Дає depth+RGB
     # реальну дорогу, яку Flux добудовує — фікс «техніка посеред поля».
     road_under_vehicle: bool = False
+    # Реальна довжина техніки у метрах (нормалізація max-dim моделі). Per-class
+    # з YAML `class.target_size_m`: Tigr ~5.7, БТР ~7.7, танк ~9.5 (зі стволом).
+    target_size_m: float = 5.0
+    # Hard negative: сцена БЕЗ техніки (empty_landscape). model_path ігнорується,
+    # камера цілиться у точку на землі — чесний порожній кадр для anti-FP.
+    hard_negative: bool = False
+    # Оклюжн: дерева/кущі/сітки між камерою і технікою (domain gap fix).
+    # n_occluders=0 → без оклюдерів (стара поведінка).
+    n_occluders: int = 0
+    occluder_kinds: tuple[str, ...] = ("tree", "bush")
+    # Destroyed: вигоріла/перевернута техніка. wreck_mode:
+    #   "off"   — ціла техніка;
+    #   "class" — wreck зі своїм category_id (детектимо як окремий клас);
+    #   "hn"    — wreck БЕЗ боксу (hard negative проти false-positive на брухті).
+    wreck_mode: str = "off"
 
 
-def build_scene(req: SceneRequest):
-    """Будує одну сцену під рендер. Повертає (camera_pose_4x4, vehicle_mesh_objs, sun_info).
+def _load_and_place_vehicle(req: SceneRequest, rng):
+    """Кроки 1-2: load model, tag, normalize scale, random yaw, lift на землю.
 
-    sun_info — dict {sun_zenith_rad, sun_azim_rad, sun_elevation_deg, sun_azimuth_deg}.
-    Споживає render_runner для metadata sidecar (downstream diffusion prompt
-    "low south-west sun at 35 degrees elevation").
-
-    Кроки:
-      1. Завантажити vehicle (.blend / .glb / .gltf / .obj / .fbx).
-      2. Tag category_id + normalize scale до 5м max-dim + random Z rotation.
-      3. Ground plane 10×10км з seasonal PBR-текстурою.
-      4. HDRI world background (strength=2.0) + explicit SUN light (energy=5).
-      5. Camera pose: distance_m + view_angle_deg → H=d·sin(θ), xy=d·cos(θ).
-      6. Camera intrinsics (focal_mm з hfov_deg, sensor_width).
+    Повертає (vehicle_meshes, center_xyz, z_rot).
     """
-    # Lazy import: bproc + bpy доступні тільки коли запущено через `blenderproc run`.
     import bpy
     import blenderproc as bproc
     import numpy as np
-
-    # 0. CLEANUP previous frame.
-    # bproc.utility.reset_keyframes() у render_runner чистить ТІЛЬКИ анімаційні keyframes,
-    # mesh+light об'єкти з попереднього кадру лишаються у сцені і накопичуються.
-    # Без цього cleanup після 3-х кадрів у сцені 3 машини = "зліплені 3 моделі" артефакт.
-    for obj in list(bpy.data.objects):
-        if obj.type in ("MESH", "LIGHT"):
-            bpy.data.objects.remove(obj, do_unlink=True)
-    # Orphan data cleanup щоб memory не роздувалась за 20+ frames (texture/mesh blocks).
-    for collection in (bpy.data.meshes, bpy.data.materials,
-                       bpy.data.images, bpy.data.lights):
-        for item in list(collection):
-            if not item.users:
-                collection.remove(item)
 
     # 1. Завантажити vehicle (dispatch за extension)
     ext = req.model_path.suffix.lower()
@@ -131,19 +121,23 @@ def build_scene(req: SceneRequest):
     vehicle_meshes = [o for o in objs if isinstance(o, bproc.types.MeshObject)]
     if not vehicle_meshes:
         raise RuntimeError(f"no MESH objects in {req.model_path}")
+    # wreck "hn" рендериться, але БЕЗ боксу → category_id 0 (background):
+    # брухт присутній у кадрі як anti-false-positive шум, але не мітиться.
+    cat_id = 0 if req.wreck_mode == "hn" else req.class_id
     for o in vehicle_meshes:
-        o.set_cp("category_id", req.class_id)
+        o.set_cp("category_id", cat_id)
 
-    # Normalize vehicle scale: max-dim → ~5 м.
-    # Захист від GLB-файлів з non-meters units (cm/dm/mm), що тягне камеру
-    # всередину моделі і дає "50-100 см рендер" замість 200-1000 м.
-    TARGET_MAX_DIM_M = 5.0
+    # Normalize vehicle scale: max-dim → target_size_m (per-class з YAML,
+    # НЕ хардкод: Tigr 5.7 м ≠ БТР 7.7 м ≠ танк 9.5 м — інакше міжкласові
+    # пропорції і GSD-реалізм зламані). Заодно захист від GLB-файлів з
+    # non-meters units (cm/dm/mm), що тягне камеру всередину моделі.
+    target_max_dim_m = float(req.target_size_m)
     combined_bbox = np.vstack([np.array(o.get_bound_box(local_coords=False))
                                for o in vehicle_meshes])
     dims = combined_bbox.max(axis=0) - combined_bbox.min(axis=0)
     current_max = float(dims.max())
     if current_max > 0.01:
-        scale_factor = TARGET_MAX_DIM_M / current_max
+        scale_factor = target_max_dim_m / current_max
         if not (0.95 < scale_factor < 1.05):
             for o in vehicle_meshes:
                 cur_scale = o.get_scale()
@@ -152,16 +146,40 @@ def build_scene(req: SceneRequest):
                 o.set_location([cur_loc[i] * scale_factor for i in range(3)])
             bpy.context.view_layer.update()
             print(f"[scale] {req.model_path.name}: max_dim "
-                  f"{current_max:.2f}m → {TARGET_MAX_DIM_M}m (×{scale_factor:.3f})")
+                  f"{current_max:.2f}m → {target_max_dim_m}m (×{scale_factor:.3f})")
 
     # Random Z rotation для variety. Після parent_clear+transform_apply вище local rotation
     # вже дорівнює world rotation, тому це чистий yaw навколо world Z (vehicle стоїть прямо).
-    rng = np.random.default_rng(req.seed)
     z_rot = float(rng.uniform(0, 2 * math.pi))
     for o in vehicle_meshes:
         cur = o.get_rotation_euler()
         o.set_rotation_euler([cur[0], cur[1], cur[2] + z_rot])
     bpy.context.view_layer.update()
+
+    # Destroyed/wreck: turret-toss + перекид + charred матеріал. Best-practice
+    # BDA-ознаки зверху (turret toss = зірвана башта, вигорілий корпус, missing
+    # tracks). GLB generic mesh → башту не сегментуємо, тому процедурно:
+    #   1. великий крен/тангаж (перекинута/на боці — розірваний силует);
+    #   2. темний обгорілий матеріал (Base Color ≈ 0.03, Roughness 1, Metallic 0).
+    # Це дає моделі «брухт ≠ ціль» без окремих 3D-моделей wreck'ів.
+    if req.wreck_mode in ("class", "hn"):
+        tilt_pitch = float(rng.uniform(math.radians(20), math.radians(80)))
+        tilt_roll = float(rng.uniform(math.radians(-70), math.radians(70)))
+        for o in vehicle_meshes:
+            cur = o.get_rotation_euler()
+            o.set_rotation_euler([cur[0] + tilt_pitch, cur[1] + tilt_roll, cur[2]])
+            try:
+                for mat in o.get_materials():
+                    mat.set_principled_shader_value("Base Color",
+                                                    [0.03, 0.03, 0.03, 1.0])
+                    mat.set_principled_shader_value("Roughness", 1.0)
+                    mat.set_principled_shader_value("Metallic", 0.0)
+            except Exception as exc:
+                print(f"[wreck] material char skip (non-fatal): "
+                      f"{exc.__class__.__name__}: {exc}")
+        bpy.context.view_layer.update()
+        print(f"[wreck] mode={req.wreck_mode} charred+toppled "
+              f"(pitch={math.degrees(tilt_pitch):.0f}° roll={math.degrees(tilt_roll):.0f}°)")
 
     # Lift vehicle щоб bbox bottom торкався ground plane (z=0).
     # Vehicle origin зазвичай у центрі моделі — без lift половина моделі тоне в землю.
@@ -187,6 +205,53 @@ def build_scene(req: SceneRequest):
     print(f"[orient] {req.model_path.name}: dims=({dims_final[0]:.2f},{dims_final[1]:.2f},{dims_final[2]:.2f}) m "
           f"center=({center[0]:.2f},{center[1]:.2f},{center[2]:.2f}) h/L={h_to_l:.2f} "
           f"{'OK' if h_to_l < 0.8 else 'LIKELY-ON-SIDE'}")
+    return vehicle_meshes, center, z_rot
+
+
+def build_scene(req: SceneRequest):
+    """Будує одну сцену під рендер. Повертає (camera_pose_4x4, vehicle_mesh_objs, sun_info).
+
+    sun_info — dict {sun_zenith_rad, sun_azim_rad, sun_elevation_deg, sun_azimuth_deg}.
+    Споживає render_runner для metadata sidecar (downstream diffusion prompt
+    "low south-west sun at 35 degrees elevation").
+
+    Кроки:
+      1. Завантажити vehicle (.blend / .glb / .gltf / .obj / .fbx) — SKIP для hard_negative.
+      2. Tag category_id + normalize scale до target_size_m max-dim + random Z rotation.
+      3. Ground plane 10×10км з seasonal PBR-текстурою.
+      4. HDRI world background (strength=2.0) + explicit SUN light (energy=5).
+      5. Camera pose: distance_m + view_angle_deg → H=d·sin(θ), xy=d·cos(θ).
+      6. Camera intrinsics (focal_mm з hfov_deg, sensor_width).
+    """
+    # Lazy import: bproc + bpy доступні тільки коли запущено через `blenderproc run`.
+    import bpy
+    import blenderproc as bproc
+    import numpy as np
+
+    # 0. CLEANUP previous frame.
+    # bproc.utility.reset_keyframes() у render_runner чистить ТІЛЬКИ анімаційні keyframes,
+    # mesh+light об'єкти з попереднього кадру лишаються у сцені і накопичуються.
+    # Без цього cleanup після 3-х кадрів у сцені 3 машини = "зліплені 3 моделі" артефакт.
+    for obj in list(bpy.data.objects):
+        if obj.type in ("MESH", "LIGHT"):
+            bpy.data.objects.remove(obj, do_unlink=True)
+    # Orphan data cleanup щоб memory не роздувалась за 20+ frames (texture/mesh blocks).
+    for collection in (bpy.data.meshes, bpy.data.materials,
+                       bpy.data.images, bpy.data.lights):
+        for item in list(collection):
+            if not item.users:
+                collection.remove(item)
+
+    rng = np.random.default_rng(req.seed)
+
+    # 1-2. Vehicle — або порожня сцена для hard negative (empty_landscape).
+    if req.hard_negative or req.model_path is None:
+        vehicle_meshes = []
+        center = np.zeros(3, dtype=float)
+        z_rot = float(rng.uniform(0, 2 * math.pi))
+        print("[hard-negative] empty_landscape — сцена без техніки")
+    else:
+        vehicle_meshes, center, z_rot = _load_and_place_vehicle(req, rng)
 
     # 2. Ground plane 10km×10km щоб горизонт не вилазив (drone з 800м бачить ~15км до горизонту).
     ground = bproc.object.create_primitive("PLANE", scale=[5000, 5000, 1])
@@ -204,7 +269,7 @@ def build_scene(req: SceneRequest):
     # depth+RGB реальну дорогу замість «техніка посеред поля». Guarded — будь-яка
     # помилка тут не валить рендер (road = nice-to-have, не критичний).
     ROAD_LANDSCAPES = ("dirt_road", "forest_belt")
-    if req.road_under_vehicle and req.landscape in ROAD_LANDSCAPES:
+    if req.road_under_vehicle and not req.hard_negative and req.landscape in ROAD_LANDSCAPES:
         try:
             road_len_m = 70.0
             road_wid_m = 5.0
@@ -293,10 +358,30 @@ def build_scene(req: SceneRequest):
     cam.clip_start = 0.1
     cam.clip_end = max(50000.0, req.camera.distance_m * 5.0)
 
+    # 7. Оклюдери (дерева/кущі/сітки) на лінії зору камера→техніка. Потребують
+    # cam_pose (щоб стати МІЖ камерою і ціллю) → будуємо тут, після кроку 5.
+    # Повертаємо окремо: render_runner ховає їх на amodal-проході (full silhouette)
+    # і показує на occluded-проході (visible silhouette) для visibility fraction.
+    occluder_objs = []
+    if req.n_occluders > 0 and not req.hard_negative and vehicle_meshes:
+        try:
+            from datasetforge.engine.occluders import build_occluders, plan_occluders
+            specs = plan_occluders(
+                (float(center[0]), float(center[1])),
+                (float(cam_pose[0]), float(cam_pose[1])),
+                rng,
+                n=int(req.n_occluders),
+                kinds=list(req.occluder_kinds),
+            )
+            occluder_objs = build_occluders(specs, req.season)
+        except Exception as exc:
+            print(f"[occluder] scatter skip (non-fatal): "
+                  f"{exc.__class__.__name__}: {exc}")
+
     sun_info = {
         "sun_zenith_rad": float(sun_zenith),
         "sun_azim_rad": float(sun_azim),
         "sun_elevation_deg": float(math.degrees(math.pi / 2 - sun_zenith)),
         "sun_azimuth_deg": float(math.degrees(sun_azim) % 360.0),
     }
-    return look_at_matrix, vehicle_meshes, sun_info
+    return look_at_matrix, vehicle_meshes, sun_info, occluder_objs

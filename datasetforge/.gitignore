@@ -1,7 +1,8 @@
-# 3D-моделі і важкі бінарники
+# 3D-моделі і важкі бінарники (assets/README.md — НЕ ігнорується, документація)
 assets/models/
 assets/backgrounds/
 assets/textures/
+assets/hdri/
 
 # Output (синтетичний дататасет — не комітити в репо)
 output/runs/

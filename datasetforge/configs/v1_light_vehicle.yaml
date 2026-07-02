@@ -7,6 +7,9 @@ seed: 42
 class:
   name: light_vehicle
   id: 7
+  # Реальна довжина цілі у метрах — нормалізація max-dim 3D-моделі.
+  # GAZ Tigr = 5.7 м. Per-class (БТР 7.7, танк ~9.5 зі стволом) — НЕ хардкод.
+  target_size_m: 5.7
   models:
     # Реальні файли у datasetforge/assets/models/light_vehicle/.
     # render_runner.py globs *.glb/.gltf/.fbx/.obj/.blend і ігнорує цей список —
@@ -16,25 +19,26 @@ class:
     - russian_gaz_tigr_version_2.glb
 
 count: 20             # Phase 1 smoke; Phase 2 = 200; Phase 3 = 600
-image_size: [640, 640]               # Phase 1 (Blender-only) backward-compat
-image_size_diffusion: [1024, 1024]   # v2_smoke (Blender+Flux), Flux native res
+# РЕНДЕР У НАТИВНУ РОЗДІЛЬНІСТЬ СЕНСОРА. Стара схема (640×640 при hfov 6°)
+# давала GSD у 3× гірший за реальну камеру → «вся техніка як крапки».
+# 1920×1080 + реальний hfov = піксельний масштаб 1-в-1 як на борту.
+image_size: [1920, 1080]
+image_size_diffusion: [1920, 1080]   # v2 notebooks рендерять Blender у це ж (без squash)
 
 camera:
-  # distance_m — 3D line-of-sight камера→техніка.
-  # TELEPHOTO-FAR рецепт: light_vehicle ~5м при hfov=6° дає ~20-33px на 1500-2700м
-  # (resolvable, але дрібно як на реальному ISR-дроні). Це замінює старий
-  # hfov=15°/150-500м (виходило «занадто близько»). КРИТИЧНО: clip_end у
-  # scene_builder.py тепер розсунутий під ці дистанції — інакше Blender default
-  # far-clip 1000м обрізав би всю геометрію (порожні маски). Tank/AD/truck (8-12м)
-  # тримають той самий діапазон у власних configs. Див. pixel_budget.md.
-  distance_m: [1500, 1800, 2100, 2400, 2700]
-  # view_angle — елевація над горизонтом.
-  # 10-30° cruising oblique + 90° nadir для diversity ракурсів (НЕ для видимості).
-  view_angle_deg: [10, 15, 20, 25, 30, 90]
-  # hfov 6° = drone ISR telephoto (zoom-gimbal). Вузький FOV + далека дистанція =
-  # дрібна техніка на реалістичному масштабі. Коли буде реальний spec камери —
-  # перерахувати lens.
-  hfov_deg: 6
+  # РЕАЛЬНИЙ ДРОН: робоча висота 150-200 м, крейсерська ~300 м.
+  # Ширококутна камера, два апаратні варіанти HFOV: 92° або 112°.
+  # distance (line-of-sight) — похідна: d = altitude / sin(view_angle).
+  altitude_m: [150, 200, 300]
+  # view_angle — елевація над горизонтом (90 = надір).
+  # Кути <30° на цих висотах дають ціль <5px min-side (за горизонтом pixel budget)
+  # — camera_sampler.filter_viable викине такі комбінації сам і залогує.
+  view_angle_deg: [30, 45, 60, 90]
+  # Два варіанти камери. Пиксельний бюджет @1920, ціль 5.7 м (див. pixel_budget.md):
+  #   92°:  надір 150м = 35px довжина / 14px min-side;  надір 300м = 18/7px
+  #   112°: надір 150м = 25/10px;  надір 300м = 12/5px (нежиттєздатно → skip)
+  # Крейсерські 300 м виживають ТІЛЬКИ у режимі 92° при кутах 60-90°.
+  hfov_deg: [92, 112]
   sensor:
     width: 1920
     height: 1080
@@ -53,13 +57,9 @@ scene:
   # landscape (dirt_road ground texture) + промпт. False = чисто, без «білих ліній».
   road_under_vehicle: false
 
-# DEPRECATED — НЕ читається жодним кодом. Камерна деградація тепер у блоці
-# `polish:` нижче (albumentations, Stage 5). Лишено для git-історії; не редагуй тут.
-degradation:
-  jpeg_quality: [60, 95]
-  motion_blur_px: [0, 8]
-  atmosphere_strength: [0.0, 0.4]
-
+# Hard negatives РЕАЛІЗОВАНО у render_runner: кожен ~7-й вихідний кадр (ratio 0.15)
+# — порожній ландшафт БЕЗ техніки (чесний anti-FP negative). Кадри, де техніка
+# видима, але sub-threshold, у датасет НЕ потрапляють (discard, не false negative).
 hard_negatives:
   ratio: 0.15
   types:
@@ -67,11 +67,42 @@ hard_negatives:
 
 output:
   format: yolo
+  # min-side фільтр bbox У ПІКСЕЛЯХ РЕНДЕРА (1920-wide). 6px — це нижня межа
+  # детекції для крейсерських 300 м @92°; тренувати ТІЛЬКИ з SAHI-тайлінгом /
+  # imgsz≥1280, інакше resize до 640 знову зробить з цілей крапки
+  # (див. configs/train_smallobj_recommended.yaml).
+  min_side_px: 6
+  # aabb (axis-aligned) | obb (oriented). OBB щільніше обгортає oblique-техніку і
+  # кодує орієнтацію (ствол vs корпус) — сильніше для розрізнення танк/БТР.
+  # Тренувати з yolo11*-obb і obb-loss. bbox рахується з amodal-силуету у обох.
+  bbox_format: aabb
   split:
     train: 0.7
     valid: 0.2
     test: 0.1
   metadata_sidecar: true
+
+# Оклюжн: дерева/кущі/маскувальні сітки МІЖ камерою і технікою. Реальна техніка
+# стоїть у посадках/під кронами/під сітками — стара сцена (голе поле + заморожена
+# Flux-маска) НІКОЛИ не давала перекриття → domain gap. Two-pass рендер рахує
+# РЕАЛЬНУ видимість із сегментації; bbox лишається amodal (повний силует).
+occlusion:
+  enabled: true
+  ratio: 0.5              # ~половина кадрів з оклюдерами
+  n_range: [1, 4]        # скільки оклюдерів на кадр
+  kinds: [tree, bush, net]
+  # <25% видимо → кадр discard (стандартна конвенція visibility threshold).
+  # ≥25% лишаємо і мітимо за amodal-межами (модель вчиться на частковому оклюжні).
+  min_visible_frac: 0.25
+
+# Destroyed/wreck: вигоріла/перевернута техніка. Для light_vehicle вимкнено
+# (актуальніше для tank/ifv_apc). mode: hn = без боксу (anti-false-positive на
+# брухті), class = окремий детектований клас (потрібен class_id).
+destroyed:
+  enabled: false
+  ratio: 0.0
+  mode: hn
+  class_id: null
 
 # Stage 3+4 — Flux depth-conditioned background inpaint. Default OFF —
 # Blender-only path (Phase 1) не торкаємо. v2_smoke notebook вмикає вручну.
@@ -82,7 +113,11 @@ diffusion:
   enabled: false
   base_model: black-forest-labs/FLUX.1-Depth-dev
   pipeline: FluxControlInpaintPipeline
-  inference_size: [1024, 1024]
+  # [h, w]. 16:9 під сенсор 1920×1080 (~1MP, кратне 16 — Flux native budget).
+  # Квадрат 1024×1024 сквошив кадр 1.78:1 → фон з викривленим масштабом.
+  # Composite потім розтягує AI-фон назад у 1920×1080; піксели ТЕХНІКИ лишаються
+  # з Blender-рендера 1920 (frozen mask) — деталь цілі не втрачається.
+  inference_size: [768, 1344]
   steps: 30
   # guidance 10 давав «пластик» + оверсатурацію. Flux-dev natural look ~3-4;
   # нижче guidance = фотографічніше, менше CGI-гладкості. Sweep 3.0-5.0.
@@ -120,25 +155,22 @@ diffusion:
     enabled: true
     strength: 0.55          # 0=без змін, 1=повна заміна під bg-середнє. Sweep 0.4-0.7.
     match_color: true       # per-channel WB+exposure (false = тільки luma)
-  # Camera-realism degradation — щоб не виглядало як кінорендер, а як зйомка з дрона.
-  # Накладається на ВЕСЬ composite (зшиває техніку+фон у єдину «камеру»).
-  # Камерна деградація ПЕРЕНЕСЕНА у Stage 5 `polish:` (нижче, albumentations).
-  # composite тепер лишає чисту основу; «псує» під камеру вже polish.
 
 # Stage 5 — «шліфування поверх» через albumentations (shared/polish.py).
 # Туман/зерно/шум/jpeg/blur — post-processing, НЕ робота генеративної моделі.
-# Той самий augmentation наближає датасет до реального дронового відео.
 # Усі трансформи pixel-only → bbox/мітки НЕ рухаються. Спільний для всіх 3 пайплайнів.
-# Кожен блок: false щоб вимкнути; p=ймовірність; решта — діапазони albumentations 2.x.
+# ПОМ'ЯКШЕНО під фактичний масштаб цілей 12-35px: агресивний jpeg q60 + iso 0.5
+# (калібровані під «20-33px» яких не було) стирали структуру цілі повністю.
+# Рендер тепер пише q95 → polish-jpeg — ЄДИНА камерна компресія (без подвійного JPEG).
 polish:
   enabled: true
-  iso_noise:           {p: 0.7,  color_shift: [0.01, 0.05], intensity: [0.1, 0.5]}
-  gauss_noise:         {p: 0.35, std_range: [0.02, 0.07]}   # частка від 255
-  motion_blur:         {p: 0.12, blur_limit: [3, 5]}      # було 0.3/[3,7] — техніка 20-33px не терпить розмиття
+  iso_noise:           {p: 0.7,  color_shift: [0.01, 0.04], intensity: [0.05, 0.3]}
+  gauss_noise:         {p: 0.3,  std_range: [0.01, 0.04]}   # частка від 255
+  motion_blur:         {p: 0.12, blur_limit: [3, 5]}      # цілі 12-35px не терплять розмиття
   defocus:             false                               # ВИМКНЕНО: давав суцільний soft-focus blanket (фото-«шлак»)
-  fog:                 {p: 0.25, fog_coef_range: [0.05, 0.25], alpha_coef: 0.08}
+  fog:                 {p: 0.25, fog_coef_range: [0.05, 0.2], alpha_coef: 0.08}
   brightness_contrast: {p: 0.5,  brightness: 0.12, contrast: 0.12}
   chromatic:           {p: 0.3,  primary: 0.02, secondary: 0.01}
-  downscale:           {p: 0.1,  scale_range: [0.85, 0.97]}  # було 0.2/[0.6,0.9] — 0.6 робив кадр ушестеро м'якшим
-  jpeg:                {p: 0.9,  quality: [60, 85]}         # головний «дрон/телефон» tell
+  downscale:           {p: 0.1,  scale_range: [0.9, 0.97]}   # 0.85 з'їдав min-side 6px цілі
+  jpeg:                {p: 0.9,  quality: [75, 90]}          # головний «дрон» tell; q60 вбивав 6-10px цілі
   seed_offset: 9000
