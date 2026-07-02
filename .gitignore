@@ -60,3 +60,18 @@ checkpoints/
 Thumbs.db
 .tools/
 .firecrawl/
+
+# datasetforge — важкі бінарники та monorepo артефакти (не для remote)
+datasetforge/assets/hdri/
+datasetforge/assets/landscapes/
+datasetforge/assets/props/
+datasetforge/assets/textures/
+datasetforge/blender_scenes/
+datasetforge_v0.zip
+*.blend
+*.blend1
+*.glb
+*.gltf
+*.fbx
+*.hdr
+*.exr
