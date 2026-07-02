@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
-# Зібрати assets bundle для Kaggle Dataset upload.
+# Зібрати assets bundle для Kaggle Dataset upload — усі класи, які є локально.
 #
 # Структура що збирається у /tmp/yolo-bb-df-assets/:
 #   hdri/{summer,autumn_mud,winter,spring}/*.hdr|.exr
 #   textures/ground/{summer,autumn_mud,winter,spring}/*_diff_*.png|.jpg
-#   models/light_vehicle/*.glb
-#   models/<other_class>/*.glb         (коли з'являться)
+#   models/<class>/*.glb        (усі папки з $REPO/datasetforge/assets/models/)
 #
-# Передумова: GAZ Tigr .glb лежать у Drive folder 1WdGkLf9H-FbscBWjkhwSHo1_L40VLqZU
-# Скрипт сам не качає — щоб не залежати від `gdown`. Інструкція як докинути нижче.
+# Sesja 8+: tank pipeline. Скрипт бере ВСІ підпапки models/ — не хардкодить клас.
 #
 # Usage:
 #   bash scripts/prep_kaggle_assets.sh
 #
 # Результат:
 #   /tmp/yolo-bb-df-assets/             — папка готова до Kaggle upload
-#   /tmp/yolo-bb-df-assets.zip          — той самий бандл як zip (~50-200MB)
+#   /tmp/yolo-bb-df-assets.zip          — той самий бандл як zip
 
 set -euo pipefail
 
@@ -28,34 +26,36 @@ rm -rf "$BUNDLE" "$BUNDLE.zip"
 
 echo "==> copy HDRI + ground textures з $SRC_ASSETS"
 mkdir -p "$BUNDLE"
-cp -r "$SRC_ASSETS/hdri" "$BUNDLE/"
-cp -r "$SRC_ASSETS/textures" "$BUNDLE/"
-mkdir -p "$BUNDLE/models/light_vehicle"
+[ -d "$SRC_ASSETS/hdri" ] && cp -r "$SRC_ASSETS/hdri" "$BUNDLE/"
+[ -d "$SRC_ASSETS/textures" ] && cp -r "$SRC_ASSETS/textures" "$BUNDLE/"
 
-echo
-echo "==> models/light_vehicle/ — нагадування: glb файли НЕ автоматизую."
-echo "    Файли GAZ Tigr / civilian / mil-pickup лежать у Drive folder:"
-echo "    https://drive.google.com/drive/folders/1WdGkLf9H-FbscBWjkhwSHo1_L40VLqZU"
-echo
-echo "    Завантаж їх (через web Drive або gdown) у:"
-echo "    $BUNDLE/models/light_vehicle/"
-echo "    очікувані файли: gaz_tigr.glb, civilian_sedan.glb, mil_pickup.glb"
-echo
+echo "==> copy models/ (all classes)"
+if [ -d "$SRC_ASSETS/models" ]; then
+  cp -r "$SRC_ASSETS/models" "$BUNDLE/"
+  echo "    included classes:"
+  for d in "$BUNDLE/models"/*/; do
+    [ -d "$d" ] || continue
+    n=$(find "$d" -maxdepth 1 -name '*.glb' | wc -l)
+    echo "     - $(basename "$d") ($n .glb)"
+  done
+else
+  echo "    [warn] $SRC_ASSETS/models відсутній"
+fi
 
-echo "==> розмір бандла (без .glb моделей):"
+echo "==> розмір бандла:"
 du -sh "$BUNDLE"
+
 echo
-echo "==> після того як докинеш .glb моделі, спакуй командою:"
-echo "    cd $(dirname $BUNDLE) && zip -r ${BUNDLE##*/}.zip ${BUNDLE##*/}"
+echo "==> dataset-metadata.json (для 'kaggle datasets version')"
+cat > "$BUNDLE/dataset-metadata.json" <<META
+{
+  "title": "yolo-bluebird-df-assets",
+  "id": "dariachuprina/yolo-bluebird-df-assets",
+  "licenses": [{"name": "unknown"}]
+}
+META
+cat "$BUNDLE/dataset-metadata.json"
+
 echo
-echo "==> upload bundle у Kaggle:"
-echo "    1. kaggle.com → Datasets → New Dataset"
-echo "    2. drag&drop $BUNDLE/ (вся папка) або $BUNDLE.zip"
-echo "    3. Title:  yolo-bluebird-df-assets"
-echo "    4. Slug:   yolo-bluebird-df-assets   (має точно збігатися — ipynb це використовує)"
-echo "    5. Visibility: Private"
-echo "    6. Create"
-echo
-echo "==> mount у Kaggle Notebook:"
-echo "    Notebook → Add data → Your Datasets → yolo-bluebird-df-assets → Add"
-echo "    Mount path: /kaggle/input/yolo-bluebird-df-assets/"
+echo "==> upload:"
+echo "    cd $BUNDLE && kaggle datasets version -p . -m 'sesja 9 — tank models + PR#3 assets' --dir-mode zip"
