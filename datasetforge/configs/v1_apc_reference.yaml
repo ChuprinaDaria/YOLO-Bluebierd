@@ -15,9 +15,11 @@ count: 700  # ~726 у референсі
 image_size: [640, 640]
 
 camera:
-  altitude_m: [300, 400, 600, 800]
-  view_angle_deg: [10, 20, 30, 45, 60]
-  hfov_deg: 70
+  # APC ~6-7м: тримаємо більший діапазон ніж light_vehicle. На 1000м хоча б 16-20 px.
+  distance_m: [200, 350, 500, 700, 1000]
+  view_angle_deg: [10, 15, 20, 25, 30, 90]
+  # hfov 15° — guess поки немає реального camera spec.
+  hfov_deg: 15
   sensor:
     width: 1920
     height: 1080

@@ -107,29 +107,37 @@ source:
 
 ```json
 {
-  "image_id": "tank_summer_400m_30deg_field_0001",
-  "source": "synthetic",
+  "image_id": "tank_summer_d400_a30_field_0001",
+  "source": "synthetic_blender",
   "dataset_version": "df-v1.0.0",
   "seed": 42,
-  "altitude_m": 400,
+  "distance_m": 400,
   "view_angle_deg": 30,
-  "hfov_deg": 70,
-  "sensor_res": [1920, 1080],
+  "altitude_m": 200,
+  "horizontal_distance_m": 346,
+  "hfov_deg": 15,
+  "sensor_res": [640, 640],
   "modality": "EO",
   "season": "summer",
   "landscape": "field",
   "weather": "clear",
   "time_of_day": "day",
+  "model_variant": "t72_v1.glb",
+  "hdri": "sunny_field_4k.hdr",
+  "ground_texture": "rocky_terrain_summer.png",
   "degradation": {
     "jpeg_q": 85,
     "blur_px": 4,
     "atmo_strength": 0.1
   },
   "class_name": "tank",
+  "class_id": 0,
   "has_targets": true,
   "n_boxes": 1
 }
 ```
+
+Поля `altitude_m` і `horizontal_distance_m` — derived з `distance_m × sin/cos(view_angle)`, пишуться для зручності stratified split.
 
 ### Local mirror
 

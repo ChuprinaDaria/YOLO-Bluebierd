@@ -29,3 +29,12 @@ mcp>=1.0
 # Hugging Face — приватний хаб + Jobs
 # УВАГА: `datasets` і `pyarrow` НЕ ставимо локально (SIGILL без SSE4.2). На cloud — без обмежень.
 huggingface_hub>=1.20
+
+# Gemini Imagen API — DEPRECATED (diffusion не дає bbox labels). Тримаємо для bg inpaint якщо знадобиться.
+google-genai>=2.10
+
+# === Blender composite pipeline (НЕ ставити локально — Phenom II без AVX) ===
+# Сlloud-only через Colab Free T4 / HF Jobs L4. Список тут для documentation.
+#   blenderproc>=2.7    — DLR-RM wrapper навколо Blender 4.2 LTS, YOLO/COCO export
+#   bpycv>=0.2          — instance segmentation + depth
+#   scipy>=1.10         — KS-test у tests/test_distribution_match.py (на cloud або новій машині)
