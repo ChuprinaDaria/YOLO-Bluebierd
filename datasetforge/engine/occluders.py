@@ -130,7 +130,14 @@ def _mat(bproc, name, color, rough=0.9):
     m = bproc.material.create(name)
     m.set_principled_shader_value("Base Color", color)
     m.set_principled_shader_value("Roughness", rough)
-    m.set_principled_shader_value("Specular", 0.05)
+    # Blender 4.2 перейменував "Specular" → "Specular IOR Level". Пробуємо обидва;
+    # для occluder-а це косметика, тому мовчки skip якщо ані немає.
+    for key in ("Specular IOR Level", "Specular"):
+        try:
+            m.set_principled_shader_value(key, 0.05)
+            break
+        except (KeyError, RuntimeError):
+            continue
     return m
 
 

@@ -1,0 +1,41 @@
+# Sanity probe — клас 0 tank, генератор Gemini Imagen (вручну через UI).
+# Мета: побачити чи Gemini відтворює oblique drone-стиль 300-800м під військову техніку,
+#       чи не валиться на цензурі, і чи bbox-distribution буде схожий на _synthetic_apc_726.
+# Це НЕ production data — це reality-check на 12 промптів перед HF Jobs pipeline.
+
+class:
+  id: 0
+  name: tank
+  models: [T-72B3, T-72B, T-80, T-90]
+  state_options: [stationary, slowly_moving]
+
+# 3 "корнер" комбінації висота×кут×ландшафт — щоб охопити простір з мінімумом промптів.
+camera_corners:
+  - { label: low_open,   altitude_m: 300, view_angle_deg: 20, landscape: open_field,         expected_bbox_px: [80, 140] }
+  - { label: mid_belt,   altitude_m: 400, view_angle_deg: 30, landscape: forest_belt_edge,   expected_bbox_px: [40,  80] }
+  - { label: high_road,  altitude_m: 800, view_angle_deg: 45, landscape: dirt_mud_road,      expected_bbox_px: [15,  35] }
+
+# 4 пори року — стилістика КРИТИЧНА (rasputitsa специфіка).
+seasons:
+  summer:      "lush green grass, dry yellow patches, full leafy trees, hard sunlight"
+  autumn_mud:  "deep brown wet mud, bare leafless trees, overcast grey sky, rasputitsa, drizzle"
+  winter:      "patchy snow cover on dark black soil, bare frosty trees, low cold sun, snow drift"
+  spring:      "muddy fields with green sprouts, partially frozen puddles, light overcast"
+
+# Постійні параметри стилю — drone-realism якорі.
+style_anchors:
+  view: "oblique aerial drone reconnaissance photo, looking down at angle from above"
+  quality: "real combat footage style, low-quality compressed video frame, slight motion blur, slightly desaturated colors"
+  modality: "EO daylight visible spectrum"
+  framing: "centered single target, partially visible terrain context, no overlay text"
+
+# Hard negatives — окремий батч після того як positive sanity пройде.
+hard_negatives_probe:
+  - "Same landscape, NO military vehicle, just empty terrain"
+  - "Burned-out T-72 wreck, charred hull, broken tracks, no turret, in same landscape"
+
+output:
+  prompts_per_corner_season: 1   # 3 corners × 4 seasons = 12 positive prompts
+  variations_per_prompt: 3        # Gemini генерує по 3-4 варіанти на 1 prompt = ~36 кадрів
+  out_dir: data/sanity/v0_tank
+  out_file: prompts.jsonl

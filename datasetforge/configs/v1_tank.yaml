@@ -1,0 +1,138 @@
+# Phase 1 tank (cls 0). Мігровано на PR #3 схему (реальна drone camera + occlusion +
+# wreck + OBB). Референс: v1_light_vehicle.yaml. Tank = Tier 1 техніка ~9.5м (T-72/80/90).
+
+version: df-v1.0.0-dev
+seed: 42
+
+class:
+  name: tank
+  id: 0
+  # Реальна довжина цілі у метрах — нормалізація max-dim 3D-моделі + pixel budget.
+  # T-72=9.5, T-80=9.7, T-90=9.5. Consumtively 9.5м (зі стволом).
+  target_size_m: 9.5
+  models:
+    - russian_t-72b3.glb
+    - t-80_mbt.glb
+    - t-90am.glb
+
+count: 20               # smoke; scale=200/600 у Phase 2/3
+# 1920×1080 нативна роздільність. 640² давав GSD у 3× гірший → «крапки».
+image_size: [1920, 1080]
+image_size_diffusion: [1920, 1080]
+
+camera:
+  # 3-зонна стратегія (sesja 8 TODO #3, скорегована під PR#3 real-camera):
+  #  - Ближня 75-100м + wide 92°       → tank 88-117px (класифікація, силует)
+  #  - Ближня 75-150м + zoom 30°       → tank 176-352px (деталі — ствол, башта)
+  #  - Робоча 150-200м + wide 92/112°  → tank 41-59px (детекція)
+  #  - Крейсер 300м + wide/zoom        → tank 15-176px (edge / деталі via zoom)
+  # hfov 30° = telephoto/zoom mode (реальний drone має optical zoom або
+  # digital crop; PR pixel_budget.md явно як варіант для крейсера).
+  # filter_viable авто-відсіє нежиттєздатне і залогує [grid-skip].
+  altitude_m: [75, 100, 150, 200, 300]
+  view_angle_deg: [30, 45, 60, 90]
+  hfov_deg: [30, 92, 112]
+  sensor:
+    width: 1920
+    height: 1080
+    modality: EO
+
+scene:
+  # Tank у реальності = поле/лісосмуга/ґрунтова дорога. Місто рідко.
+  landscapes: [dirt_road, field, forest_belt, field, dirt_road]
+  seasons: [summer, autumn_mud, winter, spring]
+  weather: [clear, fog, haze, rain]
+  time_of_day: [day, dusk]
+  # Дорогу дає landscape (dirt_road ground) + prompt. road_under_vehicle
+  # додатковий primitive не потрібен (біла полоса bug — sesja 5b).
+  road_under_vehicle: false
+
+# Кожен ~7-й вихідний кадр — порожній ландшафт БЕЗ техніки (anti-FP negative).
+hard_negatives:
+  ratio: 0.15
+  types:
+    - empty_landscape
+
+output:
+  format: yolo
+  # 6px — межа детекції для крейсерських 300м @92° tank (12px min-side комфорт;
+  # sub-threshold discard'иться цілком, не пише empty label).
+  min_side_px: 6
+  # OBB для tank КРИТИЧНО: ствол = ключовий discriminator vs БТР на дрібному
+  # масштабі. axis-aligned bbox тягне багато фону і губить orientation cue.
+  bbox_format: obb
+  split:
+    train: 0.7
+    valid: 0.2
+    test: 0.1
+  metadata_sidecar: true
+
+# Оклюжн: tank у посадках/під деревами/маскувальні сітки — реальність.
+# Two-pass рендер: без оклюдерів = amodal силует; з оклюдерами = видимий →
+# visibility_fraction. bbox лишається amodal. <25% видимо → discard.
+occlusion:
+  enabled: true
+  ratio: 0.5             # ~половина кадрів з оклюдерами
+  n_range: [1, 4]
+  kinds: [tree, bush, net]
+  min_visible_frac: 0.25
+
+# Розбитий/спалений tank — sesja 8 TODO #1. mode: hn = процедурний wreck БЕЗ боксу
+# (anti-FP на брухті). ratio 0.10 = ~10% кадрів wreck без bbox — модель вчиться
+# «розбитий tank ≠ ціль».
+destroyed:
+  enabled: true
+  ratio: 0.10
+  mode: hn
+  class_id: null
+
+# Stage 3+4 — Flux/Qwen diffusion. Default OFF — Blender-only path.
+diffusion:
+  enabled: false
+  base_model: black-forest-labs/FLUX.1-Depth-dev
+  pipeline: FluxControlInpaintPipeline
+  # 16:9 під 1920×1080 сенсор (Flux native budget, кратне 16). [h, w].
+  inference_size: [768, 1344]
+  steps: 30
+  guidance: 3.5
+  true_cfg_scale: 1.0
+  lora:
+    enabled: false
+    repo: XLabs-AI/flux-RealismLora
+    weight_name: lora.safetensors
+    adapter_name: realism
+    scale: 0.8
+  strength: 0.88
+  mask_dilate_px: 4
+  mask_feather_px: 2
+  # Pre-Qwen erase: cv2.inpaint вирізає vehicle область з input → Qwen бачить
+  # clean landscape і не малює ghost tank. Sesja 8 fix.
+  # dilate_px 12 калібровано на 1024². Tank на 1344×768 ~1.35× ширший ніж
+  # light_vehicle → підняти до 16. Перевірити erase_smoke_local на реальному frame.
+  erase:
+    enabled: true
+    dilate_px: 16
+    radius: 8
+    method: TELEA
+  prompt_template: "aerial drone reconnaissance photo of a {landscape} in {season}, {weather}, {sun_cardinal} sunlight at {sun_elevation_deg:.0f} degrees elevation, shot from {altitude_m:.0f} meters altitude at {view_angle_deg:.0f} degrees oblique top-down angle"
+  negative_prompt: "person, soldier, vehicle, tank, MBT, T-72, T-80, T-90, multiple vehicles, ghost vehicle, truck, car, motorcycle, building, road sign, text, watermark, ui, 3d render, cgi, render, video game, unreal engine, octane, blender, plastic, glossy, waxy, airbrushed, cinematic, dramatic lighting, golden hour, lens flare, bokeh, depth of field, hdr, oversaturated, vivid, overprocessed, masterpiece, artstation, oversharpened, illustration, painting, blurry, low quality"
+  seed_offset: 1000
+  relight:
+    enabled: true
+    strength: 0.55
+    match_color: true
+
+polish:
+  # Sesja 8: ТІЛЬКИ зерно + jpeg block-effects. Motion_blur/defocus/downscale/fog/
+  # chromatic/brightness — OFF (soft blanket blur від downscale p=1.0 у sesja 6-7).
+  enabled: true
+  iso_noise:           {p: 1.0, color_shift: [0.02, 0.04], intensity: [0.20, 0.35]}
+  gauss_noise:         {p: 1.0, std_range: [0.025, 0.045]}
+  motion_blur:         {p: 0.0}
+  defocus:             {p: 0.0}
+  fog:                 {p: 0.0}
+  brightness_contrast: {p: 0.0}
+  chromatic:           {p: 0.0}
+  downscale:           {p: 0.0}
+  jpeg:                {p: 1.0, quality: [62, 78]}
+  seed_offset: 9000

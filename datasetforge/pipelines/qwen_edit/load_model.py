@@ -27,7 +27,7 @@ import torch
 from PIL import Image
 
 from datasetforge.pipelines.shared.prompts import build_prompt
-from datasetforge.pipelines.shared.cond import load_depth_normalized
+from datasetforge.pipelines.shared.cond import load_depth_normalized, erase_vehicle_from_rgb
 from datasetforge.pipelines.shared.precision import select_precision
 
 
@@ -79,7 +79,20 @@ def edit_one(
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     inf_h, inf_w = diffusion_cfg["inference_size"]
 
-    rgb = Image.open(rgb_path).convert("RGB").resize((inf_w, inf_h), Image.LANCZOS)
+    rgb_orig = Image.open(rgb_path).convert("RGB").resize((inf_w, inf_h), Image.LANCZOS)
+    # Pre-erase vehicle area щоб Qwen не клонував tank у фон ("ghost tank" bug).
+    # Default ON для instruct mode; вимкнути через diffusion.erase.enabled=False.
+    erase_cfg = diffusion_cfg.get("erase") or {}
+    if erase_cfg.get("enabled", True):
+        rgb, erase_stats = erase_vehicle_from_rgb(
+            rgb_orig, mask_path, (inf_h, inf_w),
+            dilate_px=int(erase_cfg.get("dilate_px", 12)),
+            radius=int(erase_cfg.get("radius", 8)),
+            method=str(erase_cfg.get("method", "TELEA")),
+        )
+    else:
+        rgb = rgb_orig
+        erase_stats = {"enabled": False}
     positive, negative = build_prompt(metadata, diffusion_cfg, mode="instruct")
     seed = int(metadata.get("seed", 0)) + int(diffusion_cfg.get("seed_offset", 2000))
     generator = torch.Generator("cpu").manual_seed(seed)
@@ -120,7 +133,7 @@ def edit_one(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.save(out_path)
 
-    return {
+    sidecar = {
         "base_model": diffusion_cfg["base_model"],
         "pipeline": diffusion_cfg.get("pipeline", "QwenImageEditPlusPipeline"),
         "inference_size": [inf_h, inf_w],
@@ -132,4 +145,29 @@ def edit_one(
         "seed": seed,
         "prompt": positive,
         "mode": "instruct",
+        "erase": erase_stats,
+        "qwen_input_erased": bool(erase_stats.get("enabled", False)),
     }
+
+    # Перезаписати metadata sidecar: render_runner Stage 1 ставить
+    # diffusion.enabled=False (бо не знає чи буде Qwen). Тут чесно фіксуємо
+    # actual параметри, щоб JSON відповідав реальному кадру.
+    metadata_updated = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata_updated["diffusion"] = {"enabled": True, **sidecar}
+    # relight + composite params з diffusion_cfg якщо є
+    relight_cfg = diffusion_cfg.get("relight") or {}
+    if relight_cfg:
+        metadata_updated["diffusion"]["relight"] = {
+            "enabled": bool(relight_cfg.get("enabled", False)),
+            "strength": float(relight_cfg.get("strength", 0.0)),
+            "match_color": bool(relight_cfg.get("match_color", False)),
+        }
+    for k in ("strength", "mask_dilate_px", "mask_feather_px"):
+        if k in diffusion_cfg:
+            metadata_updated["diffusion"][k] = diffusion_cfg[k]
+    meta_path.write_text(
+        json.dumps(metadata_updated, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    return sidecar
