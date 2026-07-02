@@ -39,9 +39,12 @@ def test_coco_to_yolo_filters_small(tmp_path: Path):
     p.write_text(json.dumps(coco))
     result = coco_to_yolo(p, image_w=640, image_h=640, min_side_px=10)
     assert len(result) == 1
-    fname, boxes = result[0]
+    # PR #3 повертає (filename, boxes, n_dropped) — n_dropped рахує викинуті
+    # min-side фільтром щоб render_runner міг відрізнити discard від hard-negative.
+    fname, boxes, n_dropped = result[0]
     assert fname == "f.jpg"
     assert len(boxes) == 1
+    assert n_dropped == 1
     assert boxes[0].cls == 7
 
 
