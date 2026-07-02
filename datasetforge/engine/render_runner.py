@@ -187,9 +187,13 @@ def main(argv=None):
         # напряму з vehicle mask. Інакше для multi-class (де class.id=0 як tank і
         # ground sentinel=255) COCO пише annotation для найбільшої instance (ground)
         # → labels містять class=255 bbox=весь кадр замість vehicle.
+        # min_side_px=5 — крапки <5px на 1000м залишаються hard negatives.
+        # Sesja 7 (2026-06-30): підняли з 10 → 5 після validate показала що
+        # на 600-800м legitimately tight bbox 5-9px dropped'ся при =10.
+        MIN_SIDE_PX = 5
         for img_filename, _ in coco_to_yolo(
             tmp_coco / "coco_annotations.json",
-            image_w=img_w, image_h=img_h, min_side_px=10,
+            image_w=img_w, image_h=img_h, min_side_px=MIN_SIDE_PX,
         ):
             stem = f"{cls_meta['name']}_{i:05d}"
             dst_img = img_dir / f"{stem}.jpg"
@@ -245,12 +249,12 @@ def main(argv=None):
                 _x0, _y0 = int(_xs.min()), int(_ys.min())
                 _w_px = int(_xs.max()) - _x0 + 1
                 _h_px = int(_ys.max()) - _y0 + 1
-                if min(_w_px, _h_px) >= 10:
+                if min(_w_px, _h_px) >= MIN_SIDE_PX:
                     _xc, _yc, _wn, _hn = coco_xywh_to_yolo((_x0, _y0, _w_px, _h_px), img_w, img_h)
                     boxes.append(YoloBox(cls=int(cls_meta["id"]), xc=_xc, yc=_yc, w=_wn, h=_hn))
                 print(f"[diag] frame {i}: mask nonzero={_xs.size}px via {_src} "
                       f"bbox=({_x0},{_y0})-({_x0+_w_px-1},{_y0+_h_px-1}) "
-                      f"size=({_w_px}x{_h_px})px n_boxes(after min_side=10)={len(boxes)}",
+                      f"size=({_w_px}x{_h_px})px n_boxes(after min_side={MIN_SIDE_PX})={len(boxes)}",
                       file=sys.stderr)
             else:
                 print(f"[diag] frame {i}: mask EMPTY (0px) via {_src} — "

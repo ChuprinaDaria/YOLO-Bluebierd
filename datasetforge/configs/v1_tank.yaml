@@ -22,13 +22,12 @@ image_size_diffusion: [1024, 1024]
 camera:
   # Tank ~9.5м, drone wide-FOV recipe (hfov=30° Mavic-class consumer drone).
   # 3 зони по distance — кожна вчить своєму:
-  #  - Ближня 100-200м: tank 56-113px → class differentiation (силует, деталі)
+  #  - Ближня 50-200м: tank 56-227px → class differentiation (силует, деталі)
   #  - Середня 300-500м: tank 23-38px → робоча зона detection
-  #  - Далека 600-1000м: tank 11-19px → крапка для далеких цілей
-  # На 800-1000м клас не зчитується (10px не несе силуету), але модель вчиться
-  # «є/нема» на крапці. Для inference: imgsz=1280 + SAHI tiling + P2 head.
-  # Reference: docs taxonomy_v3 "висота 300-800м" + reality drone @ 1000м = крапка.
-  distance_m: [100, 150, 200, 300, 400, 500, 600, 700, 800, 1000]
+  #  - Далека 600-800м: tank 14-19px → detection edge
+  # 1000м прибрано (sesja 9) — крапка 11px не детектилась, тільки шум у labels.
+  # Reference: docs taxonomy_v3 "висота 300-800м".
+  distance_m: [50, 75, 100, 150, 200, 300, 400, 500, 600, 700, 800]
   view_angle_deg: [10, 15, 20, 25, 30, 90]
   hfov_deg: 30
   sensor:
@@ -81,6 +80,13 @@ diffusion:
   # Edge може бути трохи різкішим, але bbox bgr↔vehicle буде чесний.
   mask_dilate_px: 2
   mask_feather_px: 0
+  # Pre-Qwen erase: cv2.inpaint вирізає vehicle область з input → Qwen бачить
+  # clean landscape і не може намалювати ghost tank. Sesja 8 fix.
+  erase:
+    enabled: true
+    dilate_px: 12
+    radius: 8
+    method: TELEA
   prompt_template: "aerial drone reconnaissance photo of a {landscape} in {season}, {weather}, {sun_cardinal} sunlight at {sun_elevation_deg:.0f} degrees elevation, shot from {altitude_m:.0f} meters altitude at {view_angle_deg:.0f} degrees oblique top-down angle"
   negative_prompt: "person, soldier, vehicle, tank, truck, car, motorcycle, building, road sign, text, watermark, ui, 3d render, cgi, render, video game, unreal engine, octane, blender, plastic, glossy, waxy, airbrushed, cinematic, dramatic lighting, golden hour, lens flare, bokeh, depth of field, hdr, oversaturated, vivid, overprocessed, masterpiece, artstation, oversharpened, illustration, painting, blurry, low quality"
   seed_offset: 1000
@@ -90,14 +96,18 @@ diffusion:
     match_color: true
 
 polish:
+  # Sesja 8: ТІЛЬКИ зерно — юзерка прибрала blur/fog/chromatic/brightness. Лишилось
+  # iso_noise + gauss_noise. jpeg compression збережено бо це structural (block-effects)
+  # а не blur. motion_blur/defocus/downscale/fog/chromatic/brightness_contrast OFF.
   enabled: true
-  iso_noise:           {p: 0.7,  color_shift: [0.01, 0.05], intensity: [0.1, 0.5]}
-  gauss_noise:         {p: 0.35, std_range: [0.02, 0.07]}
-  motion_blur:         {p: 0.12, blur_limit: [3, 5]}
-  defocus:             false
-  fog:                 {p: 0.25, fog_coef_range: [0.05, 0.25], alpha_coef: 0.08}
-  brightness_contrast: {p: 0.5,  brightness: 0.12, contrast: 0.12}
-  chromatic:           {p: 0.3,  primary: 0.02, secondary: 0.01}
-  downscale:           {p: 0.1,  scale_range: [0.85, 0.97]}
-  jpeg:                {p: 0.9,  quality: [60, 85]}
+  iso_noise:           {p: 1.0, color_shift: [0.02, 0.04], intensity: [0.20, 0.35]}
+  gauss_noise:         {p: 1.0, std_range: [0.025, 0.045]}
+  motion_blur:         {p: 0.0}
+  defocus:             {p: 0.0}
+  fog:                 {p: 0.0}
+  brightness_contrast: {p: 0.0}
+  chromatic:           {p: 0.0}
+  downscale:           {p: 0.0}
+  jpeg:                {p: 1.0, quality: [62, 78]}
+  seed_offset: 9000
   seed_offset: 9000
