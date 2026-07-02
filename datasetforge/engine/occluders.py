@@ -43,11 +43,11 @@ def plan_occluders(
     *,
     n: int,
     kinds: list[str],
-    gap_m: tuple[float, float] = (1.5, 6.0),
-    lateral_m: tuple[float, float] = (-3.0, 3.0),
-    tree_h: tuple[float, float] = (4.0, 9.0),
-    bush_h: tuple[float, float] = (1.0, 2.5),
-    net_h: tuple[float, float] = (2.0, 3.5),
+    gap_m: tuple[float, float] = (1.5, 8.0),
+    lateral_m: tuple[float, float] = (-2.0, 2.0),
+    tree_h: tuple[float, float] = (8.0, 14.0),
+    bush_h: tuple[float, float] = (1.5, 3.5),
+    net_h: tuple[float, float] = (2.5, 4.0),
 ) -> list[OccluderSpec]:
     """Розкидати `n` оклюдерів між технікою і камерою.
 
@@ -76,13 +76,13 @@ def plan_occluders(
         oy = vy + uy * gap + py * lat
         if kind == "tree":
             h = float(rng.uniform(*tree_h))
-            r = float(rng.uniform(0.8, 2.2))
+            r = float(rng.uniform(3.0, 5.0))     # реалістична крона 3-5м для aerial view
         elif kind == "net":
             h = float(rng.uniform(*net_h))
-            r = float(rng.uniform(2.5, 4.5))
+            r = float(rng.uniform(3.0, 5.5))     # маскувальна сітка ~5-11м у діаметрі
         else:  # bush
             h = float(rng.uniform(*bush_h))
-            r = float(rng.uniform(0.8, 1.8))
+            r = float(rng.uniform(1.5, 3.0))     # bushy foliage ~3-6м
         specs.append(OccluderSpec(
             kind=kind, x=ox, y=oy, z=0.0,
             height_m=h, radius_m=r,

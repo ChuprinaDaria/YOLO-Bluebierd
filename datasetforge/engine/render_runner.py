@@ -213,7 +213,14 @@ def main(argv=None):
             seg_class_id = label_class_id + SEG_OFFSET
 
         n_occ = 0
-        if occ_on and not is_hn and rng_out.random() < occ_ratio:
+        # Landscape-aware kinds: на dirt_road дерев нема — тільки bush/net;
+        # на forest_belt/field дерева допустимі. Якщо після фільтра kinds
+        # порожній — occlusion skip (не всяка сцена сумісна).
+        if landscape == "dirt_road":
+            effective_kinds = tuple(k for k in occ_kinds if k in ("bush", "net"))
+        else:
+            effective_kinds = occ_kinds
+        if effective_kinds and occ_on and not is_hn and rng_out.random() < occ_ratio:
             lo, hi = int(occ_nrange[0]), int(occ_nrange[1])
             n_occ = int(rng_out.integers(lo, hi + 1))
 
@@ -241,7 +248,7 @@ def main(argv=None):
             target_size_m=target_size_m,
             hard_negative=is_hn,
             n_occluders=n_occ,
-            occluder_kinds=occ_kinds,
+            occluder_kinds=effective_kinds,
             wreck_mode=wreck_mode,
         )
 
@@ -381,7 +388,7 @@ def main(argv=None):
             "is_destroyed": is_wreck,
             "wreck_mode": wreck_mode,
             "n_occluders": n_occ,
-            "occluder_kinds": list(occ_kinds) if n_occ else [],
+            "occluder_kinds": list(effective_kinds) if n_occ else [],
             "visibility_fraction": round(visibility, 4),
             "is_occluded": bool(occluder_objs) and visibility < 0.98,
             "vehicle_visible_px": vis_px,
