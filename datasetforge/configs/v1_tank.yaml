@@ -21,14 +21,17 @@ image_size: [1920, 1080]
 image_size_diffusion: [1920, 1080]
 
 camera:
-  # Реальний drone: 150-200м робоча / ~300м крейсер.
-  # Tank 9.5м @92°: 150м = 58px length / 23px min-side (класифікація ok);
-  #                 300м = 29px / 12px (детекція ok).
-  # @112°: 150м = 41/16.5; 300м = 20.5/8px (edge — тільки надір 90°).
+  # 3-зонна стратегія (sesja 8 TODO #3, скорегована під PR#3 real-camera):
+  #  - Ближня 75-100м + wide 92°       → tank 88-117px (класифікація, силует)
+  #  - Ближня 75-150м + zoom 30°       → tank 176-352px (деталі — ствол, башта)
+  #  - Робоча 150-200м + wide 92/112°  → tank 41-59px (детекція)
+  #  - Крейсер 300м + wide/zoom        → tank 15-176px (edge / деталі via zoom)
+  # hfov 30° = telephoto/zoom mode (реальний drone має optical zoom або
+  # digital crop; PR pixel_budget.md явно як варіант для крейсера).
   # filter_viable авто-відсіє нежиттєздатне і залогує [grid-skip].
-  altitude_m: [150, 200, 300]
+  altitude_m: [75, 100, 150, 200, 300]
   view_angle_deg: [30, 45, 60, 90]
-  hfov_deg: [92, 112]
+  hfov_deg: [30, 92, 112]
   sensor:
     width: 1920
     height: 1080
