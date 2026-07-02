@@ -200,12 +200,17 @@ def main(argv=None):
         is_hn = hn_period > 0 and (kept % hn_period) == (hn_period - 1)
         is_wreck = (not is_hn) and dstr_period > 0 and (kept % dstr_period) == 0
         wreck_mode = dstr_mode if is_wreck else "off"
-        # Клас мітки: wreck-class пише свій destroyed id; решта — клас техніки.
+        # Sesja 6 fix (перенесено): label_class_id ↔ seg_class_id offset.
+        # Background (sky/ground/occluders) — category_id=0. Якщо class.id==0
+        # (наприклад tank) — vehicle зіллється з фоном → mask=весь кадр.
+        # Тому seg_class_id = label_class_id + 100 OFFSET (у мітки пишемо
+        # оригінальний label_class_id, у Blender scene ставимо offset).
+        SEG_OFFSET = 100
         label_class_id = int(cls_meta["id"])
-        seg_class_id = int(cls_meta["id"])
+        seg_class_id = label_class_id + SEG_OFFSET
         if is_wreck and dstr_mode == "class" and dstr_class_id is not None:
             label_class_id = int(dstr_class_id)
-            seg_class_id = int(dstr_class_id)
+            seg_class_id = label_class_id + SEG_OFFSET
 
         n_occ = 0
         if occ_on and not is_hn and rng_out.random() < occ_ratio:
